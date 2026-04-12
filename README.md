@@ -152,6 +152,83 @@ You can edit this file directly or use the in-app settings panel.
 
 ---
 
+## Uninstall
+
+### 1. Stop the running daemon
+
+```bash
+pkill -f spotlight.py
+```
+
+### 2. Remove autostart entry
+
+```bash
+rm -f ~/.config/autostart/spotlight-chat.desktop
+```
+
+### 3. Remove saved config
+
+```bash
+rm -rf ~/.config/spotlight-chat
+```
+
+### 4. Remove the hotkey (per DE)
+
+**KDE** — open *System Settings → Shortcuts → Custom Shortcuts*, find **Spotlight Chat** and delete it.
+
+**GNOME**
+```bash
+# list custom bindings to find the right index (e.g. custom0)
+gsettings get org.gnome.settings-daemon.plugins.media-keys custom-keybindings
+
+# remove the binding (replace custom0 with the correct entry)
+SCHEMA="org.gnome.settings-daemon.plugins.media-keys.custom-keybinding"
+PATH_="/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom0/"
+gsettings reset "${SCHEMA}:${PATH_}" name
+gsettings reset "${SCHEMA}:${PATH_}" command
+gsettings reset "${SCHEMA}:${PATH_}" binding
+
+# remove from the list (set to empty or remove the entry)
+gsettings set org.gnome.settings-daemon.plugins.media-keys custom-keybindings "[]"
+```
+
+**Hyprland** — remove the two lines added to `~/.config/hypr/hyprland.conf`:
+```
+bind = Alt, Space, exec, bash /path/to/toggle.sh
+exec-once = python3 /path/to/spotlight.py --daemon
+```
+
+**Sway** — remove the two lines added to `~/.config/sway/config`:
+```
+bindsym Alt+space exec bash /path/to/toggle.sh
+exec python3 /path/to/spotlight.py --daemon
+```
+
+**i3** — remove the two lines added to `~/.config/i3/config`:
+```
+bindsym Alt+space exec bash /path/to/toggle.sh
+exec --no-startup-id python3 /path/to/spotlight.py --daemon
+```
+
+**XFCE**
+```bash
+xfconf-query -c xfce4-keyboard-shortcuts -p "/commands/custom/<Alt>space" --reset
+```
+
+**xbindkeys (generic X11)**
+```bash
+# remove the spotlight-chat block from ~/.xbindkeysrc, then reload
+pkill xbindkeys && xbindkeys
+```
+
+### 5. Delete the repo
+
+```bash
+rm -rf /path/to/spotlight-chat
+```
+
+---
+
 ## How it works
 
 - `spotlight.py` runs as a **background daemon** — a Qt app with `QuitOnLastWindowClosed=False`
