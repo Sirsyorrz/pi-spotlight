@@ -14,14 +14,14 @@ if [[ ! -f "$HYPR_CONF" ]]; then
 fi
 
 # Don't add duplicate
-if grep -qF "spotlight-chat" "$HYPR_CONF"; then
+if grep -qF "pi-spotlight" "$HYPR_CONF"; then
     echo "✓ Hyprland keybind already present in $HYPR_CONF"
     return 0 2>/dev/null || exit 0
 fi
 
 cat >> "$HYPR_CONF" << EOF
 
-# spotlight-chat
+# pi-spotlight
 bind = Alt, Space, exec, bash $TOGGLE
 EOF
 

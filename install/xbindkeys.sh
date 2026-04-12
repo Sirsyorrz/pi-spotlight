@@ -14,12 +14,12 @@ fi
 XBINDKEYS_RC="${HOME}/.xbindkeysrc"
 
 # Don't add duplicate
-if [[ -f "$XBINDKEYS_RC" ]] && grep -qF "spotlight-chat" "$XBINDKEYS_RC"; then
+if [[ -f "$XBINDKEYS_RC" ]] && grep -qF "pi-spotlight" "$XBINDKEYS_RC"; then
     echo "✓ xbindkeys entry already present in $XBINDKEYS_RC"
 else
     cat >> "$XBINDKEYS_RC" << EOF
 
-# spotlight-chat
+# pi-spotlight
 "bash $TOGGLE"
     Alt + space
 EOF
@@ -47,4 +47,4 @@ fi
 pkill -x xbindkeys 2>/dev/null || true
 sleep 0.3
 xbindkeys &
-echo "✓ xbindkeys started (Alt+Space → spotlight-chat)"
+echo "✓ xbindkeys started (Alt+Space → pi-spotlight)"

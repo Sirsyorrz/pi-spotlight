@@ -1,4 +1,4 @@
-# spotlight-chat
+# pi-spotlight
 
 A macOS Spotlight-style overlay for [`pi`](https://github.com/anthropics/claude-code) (Claude Code) on Linux.  
 Press **Alt+Space** anywhere → ask a question or drop into a full interactive agent session.
@@ -20,7 +20,7 @@ Press **Alt+Space** anywhere → ask a question or drop into a full interactive 
 - **Agent mode** — full interactive `pi` session via PTY, ANSI colours rendered live
 - **Universal installer** — auto-detects KDE, GNOME, Hyprland, Sway, i3, XFCE, or any X11/Wayland environment
 - **Settings panel** — model picker, tool permissions, working directory, `pi` binary auto-discovery
-- **Config persistence** — preferences saved to `~/.config/spotlight-chat/config.json`
+- **Config persistence** — preferences saved to `~/.config/pi-spotlight/config.json`
 - **PyQt5 / PyQt6** — works with either; falls back automatically
 
 ---
@@ -38,15 +38,15 @@ Press **Alt+Space** anywhere → ask a question or drop into a full interactive 
 ## Install
 
 ```bash
-git clone https://github.com/Sirsyorrz/spotlight-chat
-cd spotlight-chat
+git clone https://github.com/Sirsyorrz/pi-spotlight
+cd pi-spotlight
 bash install.sh
 ```
 
 The installer will:
 
 1. Check all dependencies and report anything missing
-2. Create an XDG autostart entry (`~/.config/autostart/spotlight-chat.desktop`)
+2. Create an XDG autostart entry (`~/.config/autostart/pi-spotlight.desktop`)
 3. Register the **Alt+Space** hotkey for your desktop environment
 4. Print manual instructions if your DE can't be auto-configured
 
@@ -133,7 +133,7 @@ Click **⚙** in the header to open the settings panel:
 
 ## Configuration
 
-Settings are saved to `~/.config/spotlight-chat/config.json`:
+Settings are saved to `~/.config/pi-spotlight/config.json`:
 
 ```json
 {
@@ -157,24 +157,24 @@ You can edit this file directly or use the in-app settings panel.
 ### 1. Stop the running daemon
 
 ```bash
-pkill -f spotlight.py
+pkill -f pi-spotlight.py
 ```
 
 ### 2. Remove autostart entry
 
 ```bash
-rm -f ~/.config/autostart/spotlight-chat.desktop
+rm -f ~/.config/autostart/pi-spotlight.desktop
 ```
 
 ### 3. Remove saved config
 
 ```bash
-rm -rf ~/.config/spotlight-chat
+rm -rf ~/.config/pi-spotlight
 ```
 
 ### 4. Remove the hotkey (per DE)
 
-**KDE** — open *System Settings → Shortcuts → Custom Shortcuts*, find **Spotlight Chat** and delete it.
+**KDE** — open *System Settings → Shortcuts → Custom Shortcuts*, find **pi-spotlight** and delete it.
 
 **GNOME**
 ```bash
@@ -195,19 +195,19 @@ gsettings set org.gnome.settings-daemon.plugins.media-keys custom-keybindings "[
 **Hyprland** — remove the two lines added to `~/.config/hypr/hyprland.conf`:
 ```
 bind = Alt, Space, exec, bash /path/to/toggle.sh
-exec-once = python3 /path/to/spotlight.py --daemon
+exec-once = python3 /path/to/pi-spotlight.py --daemon
 ```
 
 **Sway** — remove the two lines added to `~/.config/sway/config`:
 ```
 bindsym Alt+space exec bash /path/to/toggle.sh
-exec python3 /path/to/spotlight.py --daemon
+exec python3 /path/to/pi-spotlight.py --daemon
 ```
 
 **i3** — remove the two lines added to `~/.config/i3/config`:
 ```
 bindsym Alt+space exec bash /path/to/toggle.sh
-exec --no-startup-id python3 /path/to/spotlight.py --daemon
+exec --no-startup-id python3 /path/to/pi-spotlight.py --daemon
 ```
 
 **XFCE**
@@ -217,22 +217,22 @@ xfconf-query -c xfce4-keyboard-shortcuts -p "/commands/custom/<Alt>space" --rese
 
 **xbindkeys (generic X11)**
 ```bash
-# remove the spotlight-chat block from ~/.xbindkeysrc, then reload
+# remove the pi-spotlight block from ~/.xbindkeysrc, then reload
 pkill xbindkeys && xbindkeys
 ```
 
 ### 5. Delete the repo
 
 ```bash
-rm -rf /path/to/spotlight-chat
+rm -rf /path/to/pi-spotlight
 ```
 
 ---
 
 ## How it works
 
-- `spotlight.py` runs as a **background daemon** — a Qt app with `QuitOnLastWindowClosed=False`
-- A **Unix socket** (`/tmp/spotlight-chat-<uid>.sock`) receives `toggle` / `show` / `hide` commands
+- `pi-spotlight.py` runs as a **background daemon** — a Qt app with `QuitOnLastWindowClosed=False`
+- A **Unix socket** (`/tmp/pi-spotlight-<uid>.sock`) receives `toggle` / `show` / `hide` commands
 - `toggle.sh` sends the toggle signal; if the daemon isn't running it starts it first
 - **Quick mode** spawns `pi --mode json -p "..."` and streams JSON events line by line
 - **Agent mode** spawns `pi` inside a **PTY** (`pty.openpty()`), reads raw bytes, and converts ANSI escape codes to HTML spans for the output widget
@@ -240,8 +240,8 @@ rm -rf /path/to/spotlight-chat
 ### File structure
 
 ```
-spotlight-chat/
-├── spotlight.py          # single-file app (quick + agent mode)
+pi-spotlight/
+├── pi-spotlight.py          # single-file app (quick + agent mode)
 ├── install.sh            # universal installer entry point
 ├── toggle.sh             # send toggle signal (used by hotkey)
 ├── install/

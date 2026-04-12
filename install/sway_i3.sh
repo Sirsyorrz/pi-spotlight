@@ -18,14 +18,14 @@ if [[ ! -f "$CONF" ]]; then
     return 1 2>/dev/null || exit 1
 fi
 
-if grep -qF "spotlight-chat" "$CONF"; then
+if grep -qF "pi-spotlight" "$CONF"; then
     echo "✓ $WM keybind already present in $CONF"
     return 0 2>/dev/null || exit 0
 fi
 
 cat >> "$CONF" << EOF
 
-# spotlight-chat
+# pi-spotlight
 bindsym Alt+space exec bash $TOGGLE
 EOF
 

@@ -16,5 +16,5 @@ PROPERTY="/commands/custom/<Alt>space"
 xfconf-query -c "$CHANNEL" -p "$PROPERTY" -n -t string -s "bash $TOGGLE" 2>/dev/null \
     || xfconf-query -c "$CHANNEL" -p "$PROPERTY" -s "bash $TOGGLE"
 
-echo "✓ XFCE shortcut registered: Alt+Space → spotlight-chat"
+echo "✓ XFCE shortcut registered: Alt+Space → pi-spotlight"
 echo "  To change: Applications → Settings → Keyboard → Application Shortcuts"

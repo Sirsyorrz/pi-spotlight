@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-Spotlight Chat — macOS Spotlight-style overlay for the `pi` agent.
+pi-spotlight — macOS Spotlight-style overlay for the `pi` agent.
 
 Modes
 -----
 Quick mode  — single-prompt, JSON streaming (original behaviour)
 Agent mode  — full interactive `pi` session via PTY + ANSI→HTML renderer
 
-Config  ~/.config/spotlight-chat/config.json
-Socket  /tmp/spotlight-chat-<uid>.sock   (toggle / show / hide)
+Config  ~/.config/pi-spotlight/config.json
+Socket  /tmp/pi-spotlight-<uid>.sock   (toggle / show / hide)
 """
 
 import sys
@@ -56,8 +56,8 @@ except ImportError:
 
 # ─── Config defaults ──────────────────────────────────────────────────────────
 
-SOCKET_PATH = f"/tmp/spotlight-chat-{os.getuid()}.sock"
-CONFIG_PATH = os.path.expanduser("~/.config/spotlight-chat/config.json")
+SOCKET_PATH = f"/tmp/pi-spotlight-{os.getuid()}.sock"
+CONFIG_PATH = os.path.expanduser("~/.config/pi-spotlight/config.json")
 
 AVAILABLE_MODELS = [
     ("Sonnet 4.5",  "anthropic/claude-sonnet-4-5"),
@@ -365,7 +365,7 @@ class PtyWorker(QThread):
 
     def run(self):
         if not self._pi_bin:
-            self.output.emit(b"\x1b[31m[spotlight-chat] pi binary not found. Set it in Settings.\x1b[0m\r\n")
+            self.output.emit(b"\x1b[31m[pi-spotlight] pi binary not found. Set it in Settings.\x1b[0m\r\n")
             self.finished.emit()
             return
 
@@ -1401,7 +1401,7 @@ def main():
         # Daemon not running — fall through and start it
 
     app = QApplication(sys.argv)
-    app.setApplicationName("spotlight-chat")
+    app.setApplicationName("pi-spotlight")
     app.setQuitOnLastWindowClosed(False)
 
     win = SpotlightWindow()

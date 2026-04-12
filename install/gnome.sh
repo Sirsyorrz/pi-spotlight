@@ -26,7 +26,7 @@ done
 BINDING_PATH="${BASE_PATH}/custom${idx}/"
 
 # Write the new binding
-gsettings set "${CUSTOM_SCHEMA}:${BINDING_PATH}" name    "Spotlight Chat"
+gsettings set "${CUSTOM_SCHEMA}:${BINDING_PATH}" name    "pi-spotlight"
 gsettings set "${CUSTOM_SCHEMA}:${BINDING_PATH}" command "bash $TOGGLE"
 gsettings set "${CUSTOM_SCHEMA}:${BINDING_PATH}" binding "<Alt>space"
 
@@ -39,5 +39,5 @@ else
 fi
 gsettings set $SCHEMA custom-keybindings "$new_list"
 
-echo "✓ GNOME shortcut registered: Alt+Space → spotlight-chat"
+echo "✓ GNOME shortcut registered: Alt+Space → pi-spotlight"
 echo "  To change it: Settings → Keyboard → View and Customize Shortcuts → Custom Shortcuts"
