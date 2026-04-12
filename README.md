@@ -38,7 +38,7 @@ Press **Alt+Space** anywhere → ask a question or drop into a full interactive 
 ## Install
 
 ```bash
-git clone https://github.com/yourname/spotlight-chat
+git clone https://github.com/Sirsyorrz/spotlight-chat
 cd spotlight-chat
 bash install.sh
 ```
