@@ -77,10 +77,12 @@ DEFAULT_CONFIG = {
     "position_y_fraction": 0.15,
 }
 
-WINDOW_W         = 720
+WINDOW_W_QUICK   = 720   # quick mode width
+WINDOW_W_AGENT   = 920   # agent mode width (wider terminal feel)
+WINDOW_W_SETTINGS= 780   # minimum width when settings panel is open
 WINDOW_H_QUICK   = 72    # collapsed (input only)
 WINDOW_H_QUICK_X = 560   # expanded with response
-WINDOW_H_AGENT   = 700   # agent mode height
+WINDOW_H_AGENT   = 720   # agent mode height
 
 
 # ─── pi binary discovery ──────────────────────────────────────────────────────
@@ -439,18 +441,29 @@ class SettingsPanel(QWidget):
         self._cfg = dict(cfg)
         self._build_ui()
 
-    def _build_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 12, 20, 12)
-        layout.setSpacing(10)
+    # helper: label with fixed width so all rows align
+    @staticmethod
+    def _lbl(text: str) -> QLabel:
+        l = QLabel(text)
+        l.setFixedWidth(130)
+        return l
 
-        # Header
+    def _build_ui(self):
+        ROW_H   = 34   # uniform height for all input controls
+        BTN_W   = 80   # uniform width for action buttons in rows
+        SPACING = 14
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 16, 24, 16)
+        layout.setSpacing(SPACING)
+
+        # ── Header ──
         hdr = QHBoxLayout()
         title = QLabel("SETTINGS")
         title.setObjectName("settingsTitle")
         close_btn = QPushButton("✕")
         close_btn.setObjectName("settingsClose")
-        close_btn.setFixedSize(24, 24)
+        close_btn.setFixedSize(28, 28)
         close_btn.clicked.connect(self.closed.emit)
         hdr.addWidget(title)
         hdr.addStretch()
@@ -459,29 +472,33 @@ class SettingsPanel(QWidget):
 
         # ── Model ──
         row1 = QHBoxLayout()
-        row1.addWidget(QLabel("Default model"))
+        row1.setSpacing(10)
+        row1.addWidget(self._lbl("Default model"))
         self._model_combo = QComboBox()
         self._model_combo.setObjectName("settingsCombo")
+        self._model_combo.setFixedHeight(ROW_H)
         for label, _ in AVAILABLE_MODELS:
             self._model_combo.addItem(label)
-        # Select current
         cur_model = self._cfg.get("model", "")
         for idx, (_, mid) in enumerate(AVAILABLE_MODELS):
             if mid == cur_model:
                 self._model_combo.setCurrentIndex(idx)
                 break
-        row1.addWidget(self._model_combo)
+        row1.addWidget(self._model_combo, 1)
         layout.addLayout(row1)
 
         # ── Quick tools ──
         row2 = QHBoxLayout()
-        row2.addWidget(QLabel("Quick mode tools"))
+        row2.setSpacing(10)
+        row2.addWidget(self._lbl("Quick tools"))
         self._tools_read = QPushButton("Read-only")
         self._tools_read.setObjectName("toolsBtn")
         self._tools_read.setCheckable(True)
+        self._tools_read.setFixedHeight(ROW_H)
         self._tools_all = QPushButton("All tools")
         self._tools_all.setObjectName("toolsBtn")
         self._tools_all.setCheckable(True)
+        self._tools_all.setFixedHeight(ROW_H)
         if self._cfg.get("quick_tools", "read") == "read":
             self._tools_read.setChecked(True)
         else:
@@ -490,6 +507,7 @@ class SettingsPanel(QWidget):
         self._tools_all.clicked.connect(lambda: self._tools_read.setChecked(False))
         row2.addWidget(self._tools_read)
         row2.addWidget(self._tools_all)
+        row2.addStretch()
         layout.addLayout(row2)
 
         # ── Divider ──
@@ -505,11 +523,14 @@ class SettingsPanel(QWidget):
 
         # Working dir
         wd_row = QHBoxLayout()
-        wd_row.addWidget(QLabel("Working dir"))
+        wd_row.setSpacing(10)
+        wd_row.addWidget(self._lbl("Working dir"))
         self._cwd_edit = QLineEdit(self._cfg.get("agent_cwd", "~"))
         self._cwd_edit.setObjectName("settingsInput")
+        self._cwd_edit.setFixedHeight(ROW_H)
         browse_btn = QPushButton("Browse")
         browse_btn.setObjectName("settingsBrowse")
+        browse_btn.setFixedSize(BTN_W, ROW_H)
         browse_btn.clicked.connect(self._browse_cwd)
         wd_row.addWidget(self._cwd_edit, 1)
         wd_row.addWidget(browse_btn)
@@ -517,11 +538,14 @@ class SettingsPanel(QWidget):
 
         # pi binary
         pi_row = QHBoxLayout()
-        pi_row.addWidget(QLabel("pi binary"))
+        pi_row.setSpacing(10)
+        pi_row.addWidget(self._lbl("pi binary"))
         self._pi_edit = QLineEdit(self._cfg.get("pi_bin", ""))
         self._pi_edit.setObjectName("settingsInput")
+        self._pi_edit.setFixedHeight(ROW_H)
         detect_btn = QPushButton("Detect")
         detect_btn.setObjectName("settingsBrowse")
+        detect_btn.setFixedSize(BTN_W, ROW_H)
         detect_btn.clicked.connect(self._detect_pi)
         pi_row.addWidget(self._pi_edit, 1)
         pi_row.addWidget(detect_btn)
@@ -529,21 +553,25 @@ class SettingsPanel(QWidget):
 
         # Font size
         font_row = QHBoxLayout()
-        font_row.addWidget(QLabel("Terminal font size"))
+        font_row.setSpacing(10)
+        font_row.addWidget(self._lbl("Font size"))
         self._font_size_edit = QLineEdit(str(self._cfg.get("font_size", 13)))
         self._font_size_edit.setObjectName("settingsInput")
-        self._font_size_edit.setFixedWidth(50)
+        self._font_size_edit.setFixedSize(64, ROW_H)
         font_row.addWidget(self._font_size_edit)
         font_row.addStretch()
         layout.addLayout(font_row)
 
         # ── Actions ──
         act_row = QHBoxLayout()
+        act_row.setSpacing(10)
         agent_btn = QPushButton("⚡  Switch to Agent Mode")
         agent_btn.setObjectName("agentSwitchBtn")
+        agent_btn.setFixedHeight(ROW_H)
         agent_btn.clicked.connect(self.switch_agent.emit)
         save_btn = QPushButton("Save")
         save_btn.setObjectName("saveBtn")
+        save_btn.setFixedHeight(ROW_H)
         save_btn.clicked.connect(self._save)
         act_row.addWidget(agent_btn)
         act_row.addStretch()
@@ -604,13 +632,13 @@ class SpotlightWindow(QWidget):
             Qt.Tool
         )
         self.setAttribute(Qt.WA_TranslucentBackground)
-        self.setFixedWidth(WINDOW_W)
+        self.setFixedWidth(WINDOW_W_QUICK)
         self.setFixedHeight(WINDOW_H_QUICK)
         self._center_on_screen()
 
     def _center_on_screen(self):
         screen = QApplication.primaryScreen().geometry()
-        x = (screen.width() - WINDOW_W) // 2
+        x = (screen.width() - self.width()) // 2
         y = int(screen.height() * self._cfg.get("position_y_fraction", 0.15))
         self.move(x, y)
 
@@ -623,7 +651,7 @@ class SpotlightWindow(QWidget):
 
         self._card = QWidget()
         self._card.setObjectName("card")
-        self._card.setFixedWidth(WINDOW_W)
+        self._card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         card_layout = QVBoxLayout(self._card)
         card_layout.setContentsMargins(20, 16, 20, 16)
@@ -661,7 +689,7 @@ class SpotlightWindow(QWidget):
         self._model_picker.currentIndexChanged.connect(self._on_model_changed)
         self._model_picker.setFocusPolicy(Qt.NoFocus)
         self._model_picker.setFixedHeight(36)
-        self._model_picker.setMinimumWidth(130)
+        self._model_picker.setMinimumWidth(120)
 
         # Mode toggle button
         self._mode_btn = QPushButton("⚡ Agent")
@@ -694,7 +722,8 @@ class SpotlightWindow(QWidget):
         self._response = QTextEdit()
         self._response.setObjectName("response")
         self._response.setReadOnly(True)
-        self._response.setFixedHeight(WINDOW_H_QUICK_X - WINDOW_H_QUICK - 60)
+        self._response.setMinimumHeight(200)
+        self._response.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self._response.hide()
         self._response.setLineWrapMode(QTextEdit.WidgetWidth)
 
@@ -704,6 +733,7 @@ class SpotlightWindow(QWidget):
         self._agent_output.setReadOnly(True)
         self._agent_output.hide()
         self._agent_output.setLineWrapMode(QTextEdit.WidgetWidth)
+        self._agent_output.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         # Agent input row
         self._agent_input_row = QWidget()
@@ -742,13 +772,13 @@ class SpotlightWindow(QWidget):
 
         card_layout.addLayout(header_row)
         card_layout.addWidget(self._divider)
-        card_layout.addWidget(self._response)
-        card_layout.addWidget(self._agent_output)
+        card_layout.addWidget(self._response, 1)
+        card_layout.addWidget(self._agent_output, 1)
         card_layout.addWidget(self._agent_input_row)
         card_layout.addWidget(self._hint)
         card_layout.addWidget(self._settings_panel)
 
-        root.addWidget(self._card)
+        root.addWidget(self._card, 1)
         self._apply_styles()
 
         # Spinner
@@ -931,8 +961,8 @@ class SpotlightWindow(QWidget):
                 color: #c8c0f5;
                 font-size: 12px;
                 font-family: monospace;
-                padding: 2px 8px;
-                height: 28px;
+                padding: 4px 8px;
+                min-height: 28px;
             }}
             QPushButton#toolsBtn {{
                 background: rgba(124, 106, 247, 0.10);
@@ -1034,7 +1064,7 @@ class SpotlightWindow(QWidget):
         self._expanded = True
         self._divider.show()
         self._response.show()
-        self.setFixedHeight(WINDOW_H_QUICK_X)
+        self._set_window_size(WINDOW_W_QUICK, WINDOW_H_QUICK_X)
 
     def _collapse_response(self):
         self._expanded = False
@@ -1043,7 +1073,7 @@ class SpotlightWindow(QWidget):
         self._divider.hide()
         self._spinner.setText("")
         self._spin_timer.stop()
-        self.setFixedHeight(WINDOW_H_QUICK)
+        self._set_window_size(WINDOW_W_QUICK, WINDOW_H_QUICK)
 
     # ── Mode switching ────────────────────────────────────────────────────────
 
@@ -1071,9 +1101,7 @@ class SpotlightWindow(QWidget):
         self._agent_output.show()
         self._agent_input_row.show()
 
-        out_h = WINDOW_H_AGENT - WINDOW_H_QUICK - 90
-        self._agent_output.setFixedHeight(out_h)
-        self.setFixedHeight(WINDOW_H_AGENT)
+        self._set_window_size(WINDOW_W_AGENT, WINDOW_H_AGENT)
 
         self._icon.setText("⚡")
         self._input.setPlaceholderText("")
@@ -1099,7 +1127,7 @@ class SpotlightWindow(QWidget):
         self._hint.show()
         self._icon.setText("⌘")
         self._input.setPlaceholderText("Ask anything…")
-        self.setFixedHeight(WINDOW_H_QUICK)
+        self._set_window_size(WINDOW_W_QUICK, WINDOW_H_QUICK)
         self._input.setFocus()
 
     def _switch_to_agent_from_settings(self):
@@ -1259,16 +1287,25 @@ class SpotlightWindow(QWidget):
         self._settings_panel.hide()
         self._resize_for_content()
 
+    def _set_window_size(self, w: int, h: int):
+        self.setFixedWidth(w)
+        self.setFixedHeight(h)
+        self._center_on_screen()
+
     def _resize_for_content(self):
+        # Settings panel natural height: header + 6 rows * (34+14) + divider + margins ≈ 340px
+        SETTINGS_H = 340
         if self._mode == "agent":
-            extra = 220 if self._settings_open else 0
-            self.setFixedHeight(WINDOW_H_AGENT + extra)
+            extra_h = SETTINGS_H if self._settings_open else 0
+            self._set_window_size(WINDOW_W_AGENT, WINDOW_H_AGENT + extra_h)
         elif self._expanded:
-            extra = 220 if self._settings_open else 0
-            self.setFixedHeight(WINDOW_H_QUICK_X + extra)
+            extra_h = SETTINGS_H if self._settings_open else 0
+            w = WINDOW_W_SETTINGS if self._settings_open else WINDOW_W_QUICK
+            self._set_window_size(w, WINDOW_H_QUICK_X + extra_h)
         else:
-            extra = 220 if self._settings_open else 0
-            self.setFixedHeight(WINDOW_H_QUICK + extra)
+            extra_h = SETTINGS_H if self._settings_open else 0
+            w = WINDOW_W_SETTINGS if self._settings_open else WINDOW_W_QUICK
+            self._set_window_size(w, WINDOW_H_QUICK + extra_h)
 
     def _on_settings_saved(self, new_cfg: dict):
         self._cfg = new_cfg
