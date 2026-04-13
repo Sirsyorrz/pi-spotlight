@@ -1,7 +1,7 @@
 # pi-spotlight
 
 A macOS Spotlight-style overlay for [`pi`](https://github.com/anthropics/claude-code) (Claude Code) on Linux.  
-Press **Alt+Space** anywhere → ask a question or drop into a full interactive agent session.
+Bind it to any shortcut you like → ask a question or drop into a full interactive agent session.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -17,8 +17,8 @@ Press **Alt+Space** anywhere → ask a question or drop into a full interactive 
 ## Features
 
 - **Quick mode** — single-prompt, streamed JSON response with thinking support
-- **Agent mode** — full interactive `pi` session via PTY, ANSI colours rendered live
-- **Universal installer** — auto-detects KDE, GNOME, Hyprland, Sway, i3, XFCE, or any X11/Wayland environment
+- **Agent mode** — full VT100 terminal via PTY (`pyte`), rendered with QPainter — supports all ANSI colours and cursor movement
+- **No daemon / no autostart** — `toggle.sh` launches the app on demand; bind it to a key and you're done
 - **Settings panel** — model picker, tool permissions, working directory, `pi` binary auto-discovery
 - **Config persistence** — preferences saved to `~/.config/pi-spotlight/config.json`
 - **PyQt5 / PyQt6** — works with either; falls back automatically
@@ -31,6 +31,7 @@ Press **Alt+Space** anywhere → ask a question or drop into a full interactive 
 |---|---|
 | `python3` | 3.8+ |
 | `PyQt5` or `PyQt6` | `pip install PyQt5` |
+| `pyte` | `pip install pyte` (VT100 terminal emulator for agent mode) |
 | [`pi`](https://github.com/anthropics/claude-code) | `npm install -g @anthropic-ai/claude-code` |
 
 ---
@@ -46,28 +47,23 @@ bash install.sh
 The installer will:
 
 1. Check all dependencies and report anything missing
-2. Create an XDG autostart entry (`~/.config/autostart/pi-spotlight.desktop`)
-3. Register the **Alt+Space** hotkey for your desktop environment
-4. Print manual instructions if your DE can't be auto-configured
+2. Detect your desktop environment
+3. Print the exact steps to bind **Alt+Space** → `toggle.sh` in your DE
 
-Then start it immediately (or log out/in for autostart to kick in):
+No autostart entry is created — the app starts when you press your shortcut and exits when you close it.
 
-```bash
-bash toggle.sh
-```
+### Bind the hotkey manually
 
-### Supported environments
+After running `install.sh`, follow the printed instructions for your DE. Bind `toggle.sh` to whatever key combination you prefer. Quick reference:
 
-| Desktop | Hotkey method |
+| Desktop | How to bind |
 |---|---|
-| KDE Plasma | `kwriteconfig5` → `khotkeysrc` |
-| GNOME | `gsettings` custom-keybindings |
-| Hyprland | Appended to `hyprland.conf` |
-| Sway | Appended to `~/.config/sway/config` |
-| i3 | Appended to `~/.config/i3/config` |
-| XFCE | `xfconf-query` on keyboard-shortcuts channel |
-| Generic X11 | `xbindkeys` (installed separately) |
-| Generic Wayland | Manual instructions printed |
+| KDE Plasma | System Settings → Shortcuts → Custom Shortcuts → New → Global Shortcut → Command: `toggle.sh` |
+| GNOME | Settings → Keyboard → Custom Shortcuts → + |
+| Hyprland | `bind = ALT, Space, exec, /path/to/toggle.sh` in `hyprland.conf` |
+| Sway / i3 | `bindsym <key> exec /path/to/toggle.sh` in config |
+| XFCE | Settings → Keyboard → Application Shortcuts |
+| Other | Bind `toggle.sh` to any key in your WM |
 
 ---
 
@@ -75,11 +71,11 @@ bash toggle.sh
 
 ### Quick mode
 
-Press **Alt+Space**, type a question, press **Enter**. The response streams in below the input bar with thinking blocks collapsed.
+Press your shortcut, type a question, press **Enter**. The response streams in below the input bar with thinking blocks collapsed.
 
 ### Agent mode
 
-Click **⚡ Agent** in the header (or press **Ctrl+A**) to open a full `pi` terminal session. Output is rendered with full ANSI colour support. Type at the bottom bar and press **Enter** to send.
+Click **⚡ Agent** in the header (or press **Ctrl+A**) to open a full `pi` terminal session. The terminal is a proper VT100 emulator — full ANSI colour, cursor movement, and interactive prompts all work. Type at the bottom bar and press **Enter** to send.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -140,11 +136,12 @@ Settings are saved to `~/.config/pi-spotlight/config.json`:
   "model": "anthropic/claude-sonnet-4-5",
   "quick_tools": "read",
   "agent_cwd": "~",
-  "pi_bin": "~/.npm/bin/pi",
+  "pi_bin": "",
   "font_family": "JetBrains Mono",
   "font_size": 13,
-  "window_width": 720,
-  "position_y_fraction": 0.15
+  "terminal_cols": 118,
+  "terminal_rows": 34,
+  "position_y_fraction": 0.10
 }
 ```
 
@@ -154,74 +151,27 @@ You can edit this file directly or use the in-app settings panel.
 
 ## Uninstall
 
-### 1. Stop the running daemon
-
-```bash
-pkill -f pi-spotlight.py
-```
-
-### 2. Remove autostart entry
-
-```bash
-rm -f ~/.config/autostart/pi-spotlight.desktop
-```
-
-### 3. Remove saved config
+### 1. Remove saved config
 
 ```bash
 rm -rf ~/.config/pi-spotlight
 ```
 
-### 4. Remove the hotkey (per DE)
+### 2. Remove the hotkey
 
-**KDE** — open *System Settings → Shortcuts → Custom Shortcuts*, find **pi-spotlight** and delete it.
+Remove whatever shortcut you added in your DE settings pointing to `toggle.sh`.
 
-**GNOME**
-```bash
-# list custom bindings to find the right index (e.g. custom0)
-gsettings get org.gnome.settings-daemon.plugins.media-keys custom-keybindings
-
-# remove the binding (replace custom0 with the correct entry)
-SCHEMA="org.gnome.settings-daemon.plugins.media-keys.custom-keybinding"
-PATH_="/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom0/"
-gsettings reset "${SCHEMA}:${PATH_}" name
-gsettings reset "${SCHEMA}:${PATH_}" command
-gsettings reset "${SCHEMA}:${PATH_}" binding
-
-# remove from the list (set to empty or remove the entry)
-gsettings set org.gnome.settings-daemon.plugins.media-keys custom-keybindings "[]"
+**Hyprland** — remove from `~/.config/hypr/hyprland.conf`:
+```
+bind = ALT, Space, exec, /path/to/toggle.sh
 ```
 
-**Hyprland** — remove the two lines added to `~/.config/hypr/hyprland.conf`:
+**Sway / i3** — remove from your config:
 ```
-bind = Alt, Space, exec, bash /path/to/toggle.sh
-exec-once = python3 /path/to/pi-spotlight.py --daemon
-```
-
-**Sway** — remove the two lines added to `~/.config/sway/config`:
-```
-bindsym Alt+space exec bash /path/to/toggle.sh
-exec python3 /path/to/pi-spotlight.py --daemon
+bindsym Alt+Space exec /path/to/toggle.sh
 ```
 
-**i3** — remove the two lines added to `~/.config/i3/config`:
-```
-bindsym Alt+space exec bash /path/to/toggle.sh
-exec --no-startup-id python3 /path/to/pi-spotlight.py --daemon
-```
-
-**XFCE**
-```bash
-xfconf-query -c xfce4-keyboard-shortcuts -p "/commands/custom/<Alt>space" --reset
-```
-
-**xbindkeys (generic X11)**
-```bash
-# remove the pi-spotlight block from ~/.xbindkeysrc, then reload
-pkill xbindkeys && xbindkeys
-```
-
-### 5. Delete the repo
+### 3. Delete the repo
 
 ```bash
 rm -rf /path/to/pi-spotlight
@@ -231,28 +181,27 @@ rm -rf /path/to/pi-spotlight
 
 ## How it works
 
-- `pi-spotlight.py` runs as a **background daemon** — a Qt app with `QuitOnLastWindowClosed=False`
-- A **Unix socket** (`/tmp/pi-spotlight-<uid>.sock`) receives `toggle` / `show` / `hide` commands
-- `toggle.sh` sends the toggle signal; if the daemon isn't running it starts it first
+- `toggle.sh` launches `pi-spotlight.py` directly — no background daemon or autostart entry needed
+- A **Unix socket** (`/tmp/pi-spotlight-<uid>.sock`) is used so that pressing the hotkey a second time toggles the already-running window instead of opening a duplicate
 - **Quick mode** spawns `pi --mode json -p "..."` and streams JSON events line by line
-- **Agent mode** spawns `pi` inside a **PTY** (`pty.openpty()`), reads raw bytes, and converts ANSI escape codes to HTML spans for the output widget
+- **Agent mode** spawns `pi` inside a **PTY** (`pty.openpty()`), feeds raw bytes into a `pyte` VT100 screen, and renders each cell with QPainter — giving accurate colour, bold, and cursor rendering
 
 ### File structure
 
 ```
 pi-spotlight/
 ├── pi-spotlight.py          # single-file app (quick + agent mode)
-├── install.sh            # universal installer entry point
-├── toggle.sh             # send toggle signal (used by hotkey)
+├── install.sh               # prints hotkey setup instructions for your DE
+├── toggle.sh                # launch / toggle the window (bind this to Alt+Space)
 ├── install/
-│   ├── detect.sh         # echoes: kde | gnome | hyprland | sway | i3 | xfce | x11 | wayland | unknown
-│   ├── deps_check.sh     # checks python3, PyQt5/6, pi binary
+│   ├── detect.sh            # echoes: kde | gnome | hyprland | sway | i3 | xfce | x11 | wayland | unknown
+│   ├── deps_check.sh        # checks python3, PyQt5/6, pyte, pi binary
 │   ├── kde.sh
 │   ├── gnome.sh
 │   ├── hyprland.sh
 │   ├── sway_i3.sh
 │   ├── xfce.sh
-│   └── xbindkeys.sh      # generic X11 fallback
+│   └── xbindkeys.sh         # generic X11 fallback
 └── README.md
 ```
 
