@@ -1395,19 +1395,19 @@ def send_toggle() -> bool:
 def main():
     args = sys.argv[1:]
 
-    if "--toggle" in args:
+    # Single-instance toggle: if already running, tell it to toggle then exit.
+    # This is the default behaviour when launched via a keyboard shortcut.
+    if "--daemon" not in args:
         if send_toggle():
             sys.exit(0)
-        # Daemon not running — fall through and start it
+        # Not running — fall through and launch fresh
 
     app = QApplication(sys.argv)
     app.setApplicationName("pi-spotlight")
     app.setQuitOnLastWindowClosed(False)
 
     win = SpotlightWindow()
-
-    if "--toggle" in args or "--daemon" not in args:
-        win._show_window()
+    win._show_window()
 
     signal.signal(signal.SIGINT, lambda *_: app.quit())
     sys.exit(app.exec_())

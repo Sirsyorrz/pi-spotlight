@@ -14,7 +14,18 @@ fi
 
 if [[ ! -f "$CONF" ]]; then
     echo "⚠  $WM config not found at $CONF"
-    echo "   Please add manually:  bindsym Alt+space exec bash $TOGGLE"
+    echo ""
+    echo "   ── Manual $WM Shortcut Setup ────────────────────────────────────────────"
+    echo "   1. Open your $WM config at $CONF"
+    echo "   2. Add this line:"
+    echo "      bindsym Alt+space exec bash $TOGGLE"
+    echo "   3. Reload config:"
+    if [[ "$WM" == "sway" ]]; then
+        echo "      swaymsg reload"
+    else
+        echo "      i3-msg reload"
+    fi
+    echo "   ────────────────────────────────────────────────────────────────────────"
     return 1 2>/dev/null || exit 1
 fi
 

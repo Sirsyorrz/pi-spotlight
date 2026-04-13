@@ -7,6 +7,14 @@ TOGGLE="$1"
 
 if ! command -v xfconf-query &>/dev/null; then
     echo "⚠  xfconf-query not found. Cannot auto-register XFCE shortcut."
+    echo ""
+    echo "   ── Manual XFCE Shortcut Setup ─────────────────────────────────────────"
+    echo "   1. Open Applications → Settings → Keyboard"
+    echo "   2. Go to the 'Application Shortcuts' tab"
+    echo "   3. Click 'Add'"
+    echo "   4. Command: bash $TOGGLE"
+    echo "   5. Press Alt+Space when prompted for the shortcut key"
+    echo "   ────────────────────────────────────────────────────────────────────────"
     return 1 2>/dev/null || exit 1
 fi
 

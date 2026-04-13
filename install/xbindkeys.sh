@@ -7,7 +7,18 @@ TOGGLE="$1"
 
 if ! command -v xbindkeys &>/dev/null; then
     echo "⚠  xbindkeys not found."
-    echo "   Install it (e.g. sudo apt install xbindkeys) then re-run."
+    echo ""
+    echo "   ── Manual xbindkeys Setup ──────────────────────────────────────────────"
+    echo "   1. Install xbindkeys:"
+    echo "      Arch/CachyOS:  sudo pacman -S xbindkeys"
+    echo "      Debian/Ubuntu: sudo apt install xbindkeys"
+    echo "      Fedora:        sudo dnf install xbindkeys"
+    echo "   2. Add to ~/.xbindkeysrc:"
+    echo "      \"bash $TOGGLE\""
+    echo "          Alt + space"
+    echo "   3. Start xbindkeys:  xbindkeys"
+    echo "   4. To auto-start, add 'xbindkeys' to your session startup"
+    echo "   ────────────────────────────────────────────────────────────────────────"
     return 1 2>/dev/null || exit 1
 fi
 

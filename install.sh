@@ -1,21 +1,18 @@
 #!/usr/bin/env bash
-# install.sh — universal pi-spotlight installer
+# install.sh — pi-spotlight installer
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TOGGLE="$SCRIPT_DIR/toggle.sh"
-AUTOSTART_DIR="$HOME/.config/autostart"
-DESKTOP_AUTOSTART="$AUTOSTART_DIR/pi-spotlight.desktop"
 
 echo "══════════════════════════════════════════════════════════"
-echo "  pi-spotlight  —  universal installer"
+echo "  pi-spotlight  —  installer"
 echo "══════════════════════════════════════════════════════════"
 echo
 
 # ── 0. Dependency check ───────────────────────────────────────────────────────
 bash "$SCRIPT_DIR/install/deps_check.sh"
 
-# Allow continuing even with warnings (user may fix later)
 read -rp "  Continue installation? [Y/n] " confirm
 confirm="${confirm:-Y}"
 if [[ "${confirm,,}" != "y" ]]; then
@@ -25,103 +22,64 @@ fi
 echo
 
 # ── 1. Make scripts executable ───────────────────────────────────────────────
-chmod +x "$TOGGLE"
+chmod +x "$SCRIPT_DIR/toggle.sh"
 chmod +x "$SCRIPT_DIR/pi-spotlight.py"
-chmod +x "$SCRIPT_DIR/install/detect.sh"
 for f in "$SCRIPT_DIR/install/"*.sh; do chmod +x "$f"; done
+echo "✓ Scripts marked executable"
+echo
 
-# ── 2. XDG Autostart (works on KDE, GNOME, XFCE, most DEs) ──────────────────
-mkdir -p "$AUTOSTART_DIR"
-cat > "$DESKTOP_AUTOSTART" << EOF
-[Desktop Entry]
-Type=Application
-Name=pi-spotlight
-Comment=Quick AI query overlay
-Exec=python3 $SCRIPT_DIR/pi-spotlight.py --daemon
-Icon=utilities-terminal
-Hidden=false
-NoDisplay=false
-X-GNOME-Autostart-enabled=true
-EOF
-echo "✓ Autostart entry created: $DESKTOP_AUTOSTART"
-
-# ── 3. Detect DE and register hotkey ─────────────────────────────────────────
+# ── 2. Print shortcut setup instructions ─────────────────────────────────────
 DE=$(bash "$SCRIPT_DIR/install/detect.sh")
 echo "  Detected environment: $DE"
 echo
 
+echo "══════════════════════════════════════════════════════════"
+echo "  Manual shortcut setup (one-time)"
+echo "══════════════════════════════════════════════════════════"
+echo
+echo "  Command to bind:  $TOGGLE"
+echo "  Recommended key:  Alt+Space  (or any key you prefer)"
+echo
+
 case "$DE" in
     kde)
-        echo "── KDE Plasma ───────────────────────────────────────────────────────────"
-        bash "$SCRIPT_DIR/install/kde.sh" "$TOGGLE" || true
+        echo "  KDE Plasma:"
+        echo "  1. Open System Settings → Shortcuts → Custom Shortcuts"
+        echo "  2. Edit → New → Global Shortcut → Command/URL"
+        echo "  3. Name: pi-spotlight"
+        echo "  4. Trigger tab → click the button → press Alt+Space"
+        echo "  5. Action tab → Command: $TOGGLE"
+        echo "  6. Apply"
         ;;
     gnome)
-        echo "── GNOME ────────────────────────────────────────────────────────────────"
-        bash "$SCRIPT_DIR/install/gnome.sh" "$TOGGLE" || true
+        echo "  GNOME:"
+        echo "  1. Open Settings → Keyboard → View and Customise Shortcuts"
+        echo "  2. Custom Shortcuts → +"
+        echo "  3. Name: pi-spotlight"
+        echo "  4. Command: $TOGGLE"
+        echo "  5. Shortcut: Alt+Space"
         ;;
     hyprland)
-        echo "── Hyprland ─────────────────────────────────────────────────────────────"
-        bash "$SCRIPT_DIR/install/hyprland.sh" "$TOGGLE" || true
-        # Also add exec to hyprland.conf for autostart (more reliable than XDG there)
-        HYPR_CONF="${HOME}/.config/hypr/hyprland.conf"
-        if [[ -f "$HYPR_CONF" ]] && ! grep -qF "pi-spotlight.*daemon" "$HYPR_CONF"; then
-            echo "" >> "$HYPR_CONF"
-            echo "# pi-spotlight autostart" >> "$HYPR_CONF"
-            echo "exec-once = python3 $SCRIPT_DIR/pi-spotlight.py --daemon" >> "$HYPR_CONF"
-            echo "✓ exec-once autostart added to $HYPR_CONF"
-        fi
+        echo "  Hyprland — add to ~/.config/hypr/hyprland.conf:"
+        echo "    bind = ALT, Space, exec, $TOGGLE"
         ;;
-    sway)
-        echo "── Sway ─────────────────────────────────────────────────────────────────"
-        bash "$SCRIPT_DIR/install/sway_i3.sh" "$TOGGLE" "sway" || true
-        SWAY_CONF="${HOME}/.config/sway/config"
-        if [[ -f "$SWAY_CONF" ]] && ! grep -qF "pi-spotlight.*daemon" "$SWAY_CONF"; then
-            echo "" >> "$SWAY_CONF"
-            echo "# pi-spotlight autostart" >> "$SWAY_CONF"
-            echo "exec python3 $SCRIPT_DIR/pi-spotlight.py --daemon" >> "$SWAY_CONF"
-            echo "✓ exec autostart added to $SWAY_CONF"
-        fi
-        ;;
-    i3)
-        echo "── i3 ───────────────────────────────────────────────────────────────────"
-        bash "$SCRIPT_DIR/install/sway_i3.sh" "$TOGGLE" "i3" || true
-        I3_CONF="${HOME}/.config/i3/config"
-        if [[ -f "$I3_CONF" ]] && ! grep -qF "pi-spotlight.*daemon" "$I3_CONF"; then
-            echo "" >> "$I3_CONF"
-            echo "# pi-spotlight autostart" >> "$I3_CONF"
-            echo "exec --no-startup-id python3 $SCRIPT_DIR/pi-spotlight.py --daemon" >> "$I3_CONF"
-            echo "✓ exec autostart added to $I3_CONF"
-        fi
+    sway|i3)
+        echo "  $DE — add to your config:"
+        echo "    bindsym Alt+Space exec $TOGGLE"
         ;;
     xfce)
-        echo "── XFCE ─────────────────────────────────────────────────────────────────"
-        bash "$SCRIPT_DIR/install/xfce.sh" "$TOGGLE" || true
-        ;;
-    x11)
-        echo "── Generic X11 (xbindkeys fallback) ─────────────────────────────────────"
-        bash "$SCRIPT_DIR/install/xbindkeys.sh" "$TOGGLE" || true
-        ;;
-    wayland)
-        echo "── Generic Wayland (unknown compositor) ─────────────────────────────────"
-        echo "  ⚠ Could not identify your Wayland compositor."
-        echo "  Please add the hotkey manually in your compositor's config:"
-        echo "    Command: bash $TOGGLE"
-        echo "    Key:     Alt+Space"
+        echo "  XFCE:"
+        echo "  1. Open Settings → Keyboard → Application Shortcuts"
+        echo "  2. Add → Command: $TOGGLE → press Alt+Space"
         ;;
     *)
-        echo "── Unknown environment ───────────────────────────────────────────────────"
-        echo "  ⚠ Could not detect your desktop environment."
-        echo "  Please add the hotkey manually:"
-        echo "    Command: bash $TOGGLE"
-        echo "    Key:     Alt+Space"
+        echo "  Bind this command to a key in your WM/DE settings:"
+        echo "    $TOGGLE"
         ;;
 esac
 
 echo
 echo "══════════════════════════════════════════════════════════"
-echo "  Installation complete!"
-echo ""
-echo "  Start now:     python3 $SCRIPT_DIR/pi-spotlight.py --daemon"
-echo "  Toggle:        bash $TOGGLE"
-echo "  Hotkey:        Alt+Space  (after login / compositor reload)"
+echo "  Done! Set up the shortcut above, then press it to open"
+echo "  pi-spotlight. No daemon or autostart needed."
 echo "══════════════════════════════════════════════════════════"

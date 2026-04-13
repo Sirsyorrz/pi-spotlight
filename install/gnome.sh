@@ -7,6 +7,14 @@ TOGGLE="$1"
 
 if ! command -v gsettings &>/dev/null; then
     echo "⚠  gsettings not found. Cannot auto-register GNOME shortcut."
+    echo ""
+    echo "   ── Manual GNOME Shortcut Setup ────────────────────────────────────────"
+    echo "   1. Open Settings → Keyboard → View and Customize Shortcuts"
+    echo "   2. Scroll to 'Custom Shortcuts' and click '+'"
+    echo "   3. Name: pi-spotlight"
+    echo "   4. Command: bash $TOGGLE"
+    echo "   5. Shortcut: Alt+Space"
+    echo "   ────────────────────────────────────────────────────────────────────────"
     return 1 2>/dev/null || exit 1
 fi
 

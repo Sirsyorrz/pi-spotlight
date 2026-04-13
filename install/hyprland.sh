@@ -9,7 +9,13 @@ HYPR_CONF="${HOME}/.config/hypr/hyprland.conf"
 
 if [[ ! -f "$HYPR_CONF" ]]; then
     echo "⚠  Hyprland config not found at $HYPR_CONF"
-    echo "   Please add manually:  bind = Alt, Space, exec, bash $TOGGLE"
+    echo ""
+    echo "   ── Manual Hyprland Shortcut Setup ──────────────────────────────────"
+    echo "   1. Open your Hyprland config (usually ~/.config/hypr/hyprland.conf)"
+    echo "   2. Add this line:"
+    echo "      bind = Alt, Space, exec, bash $TOGGLE"
+    echo "   3. Reload config:  hyprctl reload"
+    echo "   ────────────────────────────────────────────────────────────────────────"
     return 1 2>/dev/null || exit 1
 fi
 

@@ -1,20 +1,10 @@
 #!/usr/bin/env bash
-# Hotkey script — toggles the spotlight window.
-# If the daemon isn't running, starts it.
+# Launch or toggle pi-spotlight.
+# Assign this script to a keyboard shortcut:
+#   KDE:   System Settings → Shortcuts → Custom Shortcuts → Command: /path/to/toggle.sh
+#   GNOME: Settings → Keyboard → Custom Shortcuts
+#   Other: bind to Alt+Space in your WM config
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SOCKET="/tmp/pi-spotlight-$(id -u).sock"
-PID_FILE="/tmp/pi-spotlight-$(id -u).pid"
-LOG_FILE="/tmp/pi-spotlight.log"
 
-# Try to toggle a running daemon
-if [ -S "$SOCKET" ]; then
-    python3 "$SCRIPT_DIR/pi-spotlight.py" --toggle 2>/dev/null
-    exit 0
-fi
-
-# Daemon not running — launch it
-nohup python3 "$SCRIPT_DIR/pi-spotlight.py" --toggle \
-    > "$LOG_FILE" 2>&1 &
-
-echo $! > "$PID_FILE"
+exec python3 "$SCRIPT_DIR/pi-spotlight.py"
