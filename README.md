@@ -4,12 +4,14 @@ A macOS Spotlight-style overlay for [`pi`](https://github.com/anthropics/claude-
 Bind it to any shortcut you like → ask a question or drop into a full interactive agent session.
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│  ⌘  Ask anything…              [Sonnet 4.5 ▾] [⚡ Agent] [⚙] │
+╭──────────────────────────────────────────────────────────────╮
+│  ✦  Ask anything…             [Sonnet 4.5 ▾] [⚡ Agent] [⚙]  │
 ├──────────────────────────────────────────────────────────────┤
-│  Here's a quick answer to your question...                   │
-│  The reason this works is because...                         │
-└──────────────────────────────────────────────────────────────┘
+│                                                              │
+│  Here's a quick answer to your question…                     │
+│  The reason this works is because…                           │
+│                                                              │
+╰──────────────────────────────────────────────────────────────╯
 ```
 
 ---
@@ -22,6 +24,7 @@ Bind it to any shortcut you like → ask a question or drop into a full interact
 - **Settings panel** — model picker, tool permissions, working directory, `pi` binary auto-discovery
 - **Config persistence** — preferences saved to `~/.config/pi-spotlight/config.json`
 - **PyQt5 / PyQt6** — works with either; falls back automatically
+- **Skills & extensions aware** — agent mode inherits all `pi` skills and extensions you already have installed (e.g. `~/.pi/agent/skills/`, `~/.pi/agent/extensions/`)
 
 ---
 
@@ -78,16 +81,17 @@ Press your shortcut, type a question, press **Enter**. The response streams in b
 Click **⚡ Agent** in the header (or press **Ctrl+A**) to open a full `pi` terminal session. The terminal is a proper VT100 emulator — full ANSI colour, cursor movement, and interactive prompts all work. Type at the bottom bar and press **Enter** to send.
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│  ⚡  Working directory: ~/projects/myapp      [⌘ Quick] [⚙]  │
+╭──────────────────────────────────────────────────────────────╮
+│  ⚡  Working directory: ~/projects/myapp      [✦ Quick] [⚙]  │
 ├──────────────────────────────────────────────────────────────┤
-│  > Reading src/main.py...                                    │
-│  > Allow edit to src/main.py? [y/n]                         │
+│                                                              │
+│  ▸ Reading src/main.py…                                      │
+│  ▸ Allow edit to src/main.py? [y/n]                          │
 │                                                              │
 ├──────────────────────────────────────────────────────────────┤
-│  ❯ _type here, enter sends to pi_                            │
-│  ↵ send  ·  ctrl+c interrupt  ·  esc hide  ·  ctrl+q quick  │
-└──────────────────────────────────────────────────────────────┘
+│  ❯  type here, enter sends to pi                             │
+│     ↵ send · ctrl+c interrupt · esc hide · ctrl+q quick      │
+╰──────────────────────────────────────────────────────────────╯
 ```
 
 ### Settings
@@ -176,6 +180,18 @@ bindsym Alt+Space exec /path/to/toggle.sh
 ```bash
 rm -rf /path/to/pi-spotlight
 ```
+
+---
+
+## Skills & Extensions
+
+Because `pi-spotlight` launches `pi` directly, it automatically picks up everything you've already configured for your `pi` coding agent — no extra setup needed:
+
+- **Skills** (`~/.pi/agent/skills/`) — any installed skill (e.g. `frontend-design`) is available the moment you open an agent session
+- **Extensions** (`~/.pi/agent/extensions/`) — custom tools, status-line plugins, and other extensions load just as they would in a normal terminal `pi` session
+- **`AGENTS.md` / `settings.json`** — your agent instructions, model preferences, and keybindings are all respected
+
+In short: if it works with `pi` in your terminal, it works here.
 
 ---
 
