@@ -4,8 +4,9 @@ pi-spotlight — macOS Spotlight-style overlay for the `pi` agent.
 
 Modes
 -----
-Quick mode  — single-prompt, JSON streaming (original behaviour)
-Agent mode  — full interactive `pi` session via PTY + ANSI→HTML renderer
+Quick mode  — single-prompt, JSON streaming
+Agent mode  — full embedded terminal (pyte VT100 + PTY, rendered via QPainter)
+              runs `pi --model <model>` directly, supports all terminal features
 
 Config  ~/.config/pi-spotlight/config.json
 Socket  /tmp/pi-spotlight-<uid>.sock   (toggle / show / hide)
@@ -13,7 +14,6 @@ Socket  /tmp/pi-spotlight-<uid>.sock   (toggle / show / hide)
 
 import sys
 import os
-import re
 import pty
 import fcntl
 import termios
@@ -22,36 +22,33 @@ import socket
 import subprocess
 import threading
 import signal
-import time
 import json
 import html
 import shutil
 import glob
+
+import pyte
 
 # ── PyQt5 / PyQt6 compat shim ────────────────────────────────────────────────
 try:
     from PyQt5.QtWidgets import (
         QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLineEdit,
         QTextEdit, QLabel, QComboBox, QSizePolicy, QPushButton,
-        QFileDialog, QFrame, QScrollArea, QStackedWidget,
+        QFileDialog, QFrame,
     )
-    from PyQt5.QtCore import (
-        Qt, QThread, pyqtSignal, QTimer, QRect, QPoint, QSize,
-    )
+    from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QSize
     from PyQt5.QtGui import (
-        QColor, QPainter, QPainterPath, QFont, QFontDatabase,
-        QPalette, QTextCursor,
+        QColor, QPainter, QPainterPath, QFont, QFontMetrics, QTextCursor,
     )
 except ImportError:
     from PyQt6.QtWidgets import (                          # type: ignore
         QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLineEdit,
         QTextEdit, QLabel, QComboBox, QSizePolicy, QPushButton,
-        QFileDialog, QFrame, QScrollArea, QStackedWidget,
+        QFileDialog, QFrame,
     )
-    from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QRect, QPoint, QSize  # type: ignore
+    from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QSize  # type: ignore
     from PyQt6.QtGui import (                              # type: ignore
-        QColor, QPainter, QPainterPath, QFont,
-        QPalette, QTextCursor,
+        QColor, QPainter, QPainterPath, QFont, QFontMetrics, QTextCursor,
     )
 
 # ─── Config defaults ──────────────────────────────────────────────────────────
@@ -67,28 +64,84 @@ AVAILABLE_MODELS = [
 ]
 
 DEFAULT_CONFIG = {
-    "model":            "anthropic/claude-sonnet-4-5",
-    "quick_tools":      "read",
-    "agent_cwd":        "~",
-    "pi_bin":           "",
-    "font_family":      "JetBrains Mono",
-    "font_size":        13,
-    "window_width":     720,
-    "position_y_fraction": 0.15,
+    "model":               "anthropic/claude-sonnet-4-5",
+    "quick_tools":         "read",
+    "agent_cwd":           "~",
+    "pi_bin":              "",
+    "font_family":         "JetBrains Mono",
+    "font_size":           13,
+    "terminal_cols":       118,
+    "terminal_rows":       34,
+    "position_y_fraction": 0.10,
 }
 
-WINDOW_W_QUICK   = 720   # quick mode width
-WINDOW_W_AGENT   = 920   # agent mode width (wider terminal feel)
-WINDOW_W_SETTINGS= 780   # minimum width when settings panel is open
-WINDOW_H_QUICK   = 72    # collapsed (input only)
-WINDOW_H_QUICK_X = 560   # expanded with response
-WINDOW_H_AGENT   = 720   # agent mode height
+# Card chrome measurements (margins + header + divider + hint + spacings)
+CARD_MARGIN_H = 40    # left 20 + right 20
+CARD_MARGIN_V = 118   # top 16 + header~40 + spacings + divider + hint~15 + bottom 16
+
+WINDOW_W_QUICK    = 720
+WINDOW_H_QUICK    = 72
+WINDOW_H_QUICK_X  = 560
+WINDOW_W_SETTINGS = 780
+
+
+# ─── Terminal colour palette (One Dark-ish) ───────────────────────────────────
+
+TERM_FG_DEFAULT = "#c8c0f5"
+TERM_BG_DEFAULT = "#0d0c14"
+TERM_CURSOR_FG  = "#0d0c14"
+TERM_CURSOR_BG  = "#c8c0f5"
+
+# pyte delivers colors as named strings ('red', 'brightred') or 6-char hex ('ff0000')
+_NAMED_COLORS = {
+    "black":         "#1a1a2e",
+    "red":           "#e06c75",
+    "green":         "#98c379",
+    "yellow":        "#e5c07b",
+    "blue":          "#61afef",
+    "magenta":       "#c678dd",
+    "cyan":          "#56b6c2",
+    "white":         "#abb2bf",
+    "brightblack":   "#5c6370",
+    "brightred":     "#be5046",
+    "brightgreen":   "#98c379",
+    "brightyellow":  "#d19a66",
+    "brightblue":    "#61afef",
+    "brightmagenta": "#c678dd",
+    "brightcyan":    "#56b6c2",
+    "brightwhite":   "#ffffff",
+}
+
+# Qt key → terminal byte sequence
+_KEY_SEQS = {
+    Qt.Key_Up:       b"\x1b[A",
+    Qt.Key_Down:     b"\x1b[B",
+    Qt.Key_Right:    b"\x1b[C",
+    Qt.Key_Left:     b"\x1b[D",
+    Qt.Key_Home:     b"\x1b[H",
+    Qt.Key_End:      b"\x1b[F",
+    Qt.Key_PageUp:   b"\x1b[5~",
+    Qt.Key_PageDown: b"\x1b[6~",
+    Qt.Key_Delete:   b"\x1b[3~",
+    Qt.Key_Insert:   b"\x1b[2~",
+    Qt.Key_F1:       b"\x1bOP",
+    Qt.Key_F2:       b"\x1bOQ",
+    Qt.Key_F3:       b"\x1bOR",
+    Qt.Key_F4:       b"\x1bOS",
+    Qt.Key_F5:       b"\x1b[15~",
+    Qt.Key_F6:       b"\x1b[17~",
+    Qt.Key_F7:       b"\x1b[18~",
+    Qt.Key_F8:       b"\x1b[19~",
+    Qt.Key_F9:       b"\x1b[20~",
+    Qt.Key_F10:      b"\x1b[21~",
+    Qt.Key_F11:      b"\x1b[23~",
+    Qt.Key_F12:      b"\x1b[24~",
+}
 
 
 # ─── pi binary discovery ──────────────────────────────────────────────────────
 
 def find_pi_binary() -> str:
-    """Return path to the `pi` binary, or empty string if not found."""
     candidates = [
         shutil.which("pi"),
         os.path.expanduser("~/.npm/bin/pi"),
@@ -97,10 +150,8 @@ def find_pi_binary() -> str:
         "/usr/local/bin/pi",
         "/usr/bin/pi",
     ]
-    # nvm glob
     for p in glob.glob(os.path.expanduser("~/.nvm/versions/node/*/bin/pi")):
         candidates.append(p)
-
     for p in candidates:
         if p and os.path.isfile(p) and os.access(p, os.X_OK):
             return p
@@ -125,168 +176,6 @@ def save_config(cfg: dict):
     os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
     with open(CONFIG_PATH, "w") as f:
         json.dump(cfg, f, indent=2)
-
-
-# ─── ANSI → HTML renderer ────────────────────────────────────────────────────
-
-_ANSI_RE = re.compile(
-    r'\x1b(?:'
-    r'\[([0-9;?]*)([A-Za-z])'    # CSI sequences
-    r'|'
-    r'\]([^\x07\x1b]*)(?:\x07|\x1b\\)'  # OSC sequences
-    r'|'
-    r'[()][AB012]'               # charset designation — ignore
-    r'|'
-    r'[=>]'                      # keypad mode — ignore
-    r'|'
-    r'[MNOPQRSTUVWXYZ\\]'        # single-char Fe sequences
-    r')'
-)
-
-# xterm 256-colour palette (first 16 standard + 6×6×6 cube + 24 greys)
-def _xterm256(n: int) -> str:
-    if n < 16:
-        _base = [
-            "#000000","#cc0000","#00cc00","#cccc00",
-            "#0000cc","#cc00cc","#00cccc","#cccccc",
-            "#888888","#ff0000","#00ff00","#ffff00",
-            "#0000ff","#ff00ff","#00ffff","#ffffff",
-        ]
-        return _base[n]
-    if n < 232:
-        n -= 16
-        b = n % 6; n //= 6
-        g = n % 6; r = n // 6
-        return "#{:02x}{:02x}{:02x}".format(r*51, g*51, b*51)
-    grey = 8 + (n - 232) * 10
-    return "#{:02x}{:02x}{:02x}".format(grey, grey, grey)
-
-
-class AnsiRenderer:
-    """
-    Stateful ANSI escape code parser.
-    Feed raw bytes → get HTML fragments back.
-    """
-
-    def __init__(self):
-        self._buf      = b""
-        self._fg       = None   # None = default
-        self._bg       = None
-        self._bold     = False
-        self._italic   = False
-        self._underline= False
-        self._dim      = False
-        self._span_open= False
-
-    # ── public API ────────────────────────────────────────────────────────────
-
-    def feed(self, raw: bytes) -> str:
-        """Process raw bytes, return HTML fragment."""
-        self._buf += raw
-        text = self._buf.decode("utf-8", errors="replace")
-        self._buf = b""
-
-        result_parts = []
-        pos = 0
-        for m in _ANSI_RE.finditer(text):
-            # emit literal text before this escape
-            if m.start() > pos:
-                result_parts.append(self._render_text(text[pos:m.start()]))
-            pos = m.end()
-            params, cmd = m.group(1), m.group(2)
-            if cmd:
-                self._handle_csi(params or "", cmd, result_parts)
-            # OSC / others → silently ignored
-        # remaining literal text
-        if pos < len(text):
-            result_parts.append(self._render_text(text[pos:]))
-        return "".join(result_parts)
-
-    def close_span(self) -> str:
-        if self._span_open:
-            self._span_open = False
-            return "</span>"
-        return ""
-
-    # ── internals ────────────────────────────────────────────────────────────
-
-    def _render_text(self, text: str) -> str:
-        if not text:
-            return ""
-        escaped = html.escape(text).replace("\n", "<br>").replace(" ", "&nbsp;")
-        style = self._current_style()
-        if style:
-            return f'<span style="{style}">{escaped}</span>'
-        return escaped
-
-    def _current_style(self) -> str:
-        parts = []
-        if self._fg:
-            parts.append(f"color:{self._fg}")
-        if self._bg:
-            parts.append(f"background:{self._bg}")
-        if self._bold:
-            parts.append("font-weight:bold")
-        if self._italic:
-            parts.append("font-style:italic")
-        if self._underline:
-            parts.append("text-decoration:underline")
-        if self._dim:
-            parts.append("opacity:0.55")
-        return ";".join(parts)
-
-    def _handle_csi(self, params: str, cmd: str, out: list):
-        # Only handle SGR (m = Select Graphic Rendition) for style
-        # All cursor-movement / erase / etc. commands are discarded
-        if cmd != "m":
-            return
-        nums = [int(x) if x else 0 for x in params.split(";")]
-        i = 0
-        while i < len(nums):
-            n = nums[i]
-            if n == 0:
-                self._reset()
-            elif n == 1:
-                self._bold = True
-            elif n == 2:
-                self._dim = True
-            elif n == 3:
-                self._italic = True
-            elif n == 4:
-                self._underline = True
-            elif n == 22:
-                self._bold = False; self._dim = False
-            elif n == 23:
-                self._italic = False
-            elif n == 24:
-                self._underline = False
-            elif 30 <= n <= 37:
-                self._fg = _xterm256(n - 30)
-            elif n == 38:
-                if i + 2 < len(nums) and nums[i+1] == 5:
-                    self._fg = _xterm256(nums[i+2]); i += 2
-                elif i + 4 < len(nums) and nums[i+1] == 2:
-                    self._fg = "#{:02x}{:02x}{:02x}".format(*nums[i+2:i+5]); i += 4
-            elif n == 39:
-                self._fg = None
-            elif 40 <= n <= 47:
-                self._bg = _xterm256(n - 40)
-            elif n == 48:
-                if i + 2 < len(nums) and nums[i+1] == 5:
-                    self._bg = _xterm256(nums[i+2]); i += 2
-                elif i + 4 < len(nums) and nums[i+1] == 2:
-                    self._bg = "#{:02x}{:02x}{:02x}".format(*nums[i+2:i+5]); i += 4
-            elif n == 49:
-                self._bg = None
-            elif 90 <= n <= 97:
-                self._fg = _xterm256(8 + n - 90)
-            elif 100 <= n <= 107:
-                self._bg = _xterm256(8 + n - 100)
-            i += 1
-
-    def _reset(self):
-        self._fg = self._bg = None
-        self._bold = self._italic = self._underline = self._dim = False
 
 
 # ─── Quick-mode worker ────────────────────────────────────────────────────────
@@ -315,10 +204,8 @@ class PiWorker(QThread):
                 [self.pi_bin, "--model", self.model, "--no-session",
                  "--mode", "json", "--tools", self.tools,
                  "-p", self.prompt],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1,
             )
             for line in self._proc.stdout:
                 line = line.strip()
@@ -348,40 +235,52 @@ class PiWorker(QThread):
             self._proc.terminate()
 
 
-# ─── PTY-based agent worker ──────────────────────────────────────────────────
+# ─── PTY worker ───────────────────────────────────────────────────────────────
 
 class PtyWorker(QThread):
+    """Opens a PTY pair, spawns `pi`, forwards raw bytes via signal."""
+
     output   = pyqtSignal(bytes)
     finished = pyqtSignal()
 
-    def __init__(self, pi_bin: str, model: str, cwd: str):
+    def __init__(self, pi_bin: str, model: str, cwd: str, cols: int, rows: int):
         super().__init__()
-        self._pi_bin = pi_bin
-        self._model  = model
-        self._cwd    = os.path.expanduser(cwd)
+        self._pi_bin    = pi_bin
+        self._model     = model
+        self._cwd       = os.path.expanduser(cwd)
+        self._cols      = cols
+        self._rows      = rows
         self._master_fd = None
         self._proc      = None
         self._running   = False
 
     def run(self):
         if not self._pi_bin:
-            self.output.emit(b"\x1b[31m[pi-spotlight] pi binary not found. Set it in Settings.\x1b[0m\r\n")
+            self.output.emit(
+                b"\r\n\x1b[31m[pi-spotlight] pi binary not found."
+                b" Configure it in Settings (\xe2\x9a\x99).\x1b[0m\r\n"
+            )
             self.finished.emit()
             return
 
         master_fd, slave_fd = pty.openpty()
         self._master_fd = master_fd
 
-        # Set terminal size (80 cols × 40 rows)
-        winsize = struct.pack("HHHH", 40, 120, 0, 0)
+        # Set terminal dimensions
+        winsize = struct.pack("HHHH", self._rows, self._cols, 0, 0)
         fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, winsize)
+
+        env = dict(os.environ)
+        env["TERM"]      = "xterm-256color"
+        env["COLORTERM"] = "truecolor"
+        env["COLUMNS"]   = str(self._cols)
+        env["LINES"]     = str(self._rows)
 
         self._proc = subprocess.Popen(
             [self._pi_bin, "--model", self._model],
-            stdin=slave_fd,
-            stdout=slave_fd,
-            stderr=slave_fd,
+            stdin=slave_fd, stdout=slave_fd, stderr=slave_fd,
             cwd=self._cwd,
+            env=env,
             close_fds=True,
             preexec_fn=os.setsid,
         )
@@ -390,7 +289,7 @@ class PtyWorker(QThread):
         self._running = True
         while self._running:
             try:
-                data = os.read(master_fd, 4096)
+                data = os.read(master_fd, 8192)
                 if not data:
                     break
                 self.output.emit(data)
@@ -401,21 +300,38 @@ class PtyWorker(QThread):
             os.close(master_fd)
         except OSError:
             pass
+
+        self._master_fd = None
         self.finished.emit()
 
-    def send_input(self, text: str):
+    def send_bytes(self, data: bytes):
         if self._master_fd is not None:
             try:
-                os.write(self._master_fd, (text + "\n").encode())
+                os.write(self._master_fd, data)
             except OSError:
                 pass
 
-    def send_key(self, raw: bytes):
+    def resize(self, cols: int, rows: int):
+        self._cols = cols
+        self._rows = rows
         if self._master_fd is not None:
             try:
-                os.write(self._master_fd, raw)
-            except OSError:
+                winsize = struct.pack("HHHH", rows, cols, 0, 0)
+                fcntl.ioctl(self._master_fd, termios.TIOCSWINSZ, winsize)
+                if self._proc:
+                    os.killpg(os.getpgid(self._proc.pid), signal.SIGWINCH)
+            except Exception:
                 pass
+
+    def send_signal(self, sig: int):
+        if self._proc:
+            try:
+                os.killpg(os.getpgid(self._proc.pid), sig)
+            except Exception:
+                try:
+                    self._proc.send_signal(sig)
+                except Exception:
+                    pass
 
     def stop(self):
         self._running = False
@@ -429,19 +345,262 @@ class PtyWorker(QThread):
                     pass
 
 
+# ─── Terminal widget ──────────────────────────────────────────────────────────
+
+class TerminalWidget(QWidget):
+    """
+    Embedded terminal emulator.
+
+    Uses pyte as a VT100/xterm-256color state machine and QPainter to render
+    the resulting character grid.  Keyboard events are translated to terminal
+    byte sequences and written back to the PTY master fd via the PtyWorker.
+
+    Supports:
+      • 16/256/true-colour via pyte → QPainter
+      • Bold, italic, underline, reverse-video
+      • Cursor blink
+      • Full key mapping (arrows, Ctrl, F-keys, etc.)
+      • SIGWINCH on resize
+    """
+
+    def __init__(self, cols: int, rows: int,
+                 font_family: str = "JetBrains Mono",
+                 font_size: int = 13,
+                 parent=None):
+        super().__init__(parent)
+
+        self._cols = cols
+        self._rows = rows
+        self._pty: PtyWorker | None = None
+
+        # ── pyte screen ──
+        self._screen = pyte.Screen(cols, rows)
+        self._stream = pyte.ByteStream(self._screen)
+        self._lock   = threading.Lock()
+
+        # ── fonts ──
+        self._font = QFont(font_family, font_size)
+        self._font.setFixedPitch(True)
+        self._font.setStyleHint(QFont.Monospace)
+        self._font_bold = QFont(self._font)
+        self._font_bold.setBold(True)
+        self._font_bold_italic = QFont(self._font_bold)
+        self._font_bold_italic.setItalic(True)
+        self._font_italic = QFont(self._font)
+        self._font_italic.setItalic(True)
+
+        fm = QFontMetrics(self._font)
+        try:
+            self._cw = fm.horizontalAdvance("M")
+        except AttributeError:
+            self._cw = fm.width("M")          # Qt < 5.11 fallback
+        self._ch      = fm.height()
+        self._ascent  = fm.ascent()
+
+        # fixed size — window is sized around this
+        self.setFixedSize(cols * self._cw, rows * self._ch)
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setAttribute(Qt.WA_OpaquePaintEvent)
+
+        # ── cursor blink ──
+        self._cursor_on  = True
+        self._blink      = QTimer(self)
+        self._blink.timeout.connect(self._blink_tick)
+        self._blink.start(530)
+
+    # ── public API ────────────────────────────────────────────────────────────
+
+    def attach_pty(self, worker: PtyWorker):
+        self._pty = worker
+
+    def feed(self, data: bytes):
+        """Process raw PTY output through pyte, then repaint."""
+        with self._lock:
+            self._stream.feed(data)
+        self.update()
+
+    # ── painting ─────────────────────────────────────────────────────────────
+
+    def paintEvent(self, _event):
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor(TERM_BG_DEFAULT))
+
+        with self._lock:
+            buf   = self._screen.buffer
+            cur_x = self._screen.cursor.x
+            cur_y = self._screen.cursor.y
+            has_focus = self.hasFocus()
+
+        cw, ch = self._cw, self._ch
+
+        for row in range(self._rows):
+            row_buf = buf[row]
+            py = row * ch
+            for col in range(self._cols):
+                char   = row_buf[col]
+                px     = col * cw
+                is_cur = (col == cur_x and row == cur_y)
+
+                fg = self._color(char.fg, default=TERM_FG_DEFAULT)
+                bg = self._color(char.bg, default=TERM_BG_DEFAULT)
+
+                if char.reverse:
+                    fg, bg = bg, fg
+
+                if is_cur and has_focus:
+                    if self._cursor_on:
+                        fg = QColor(TERM_CURSOR_FG)
+                        bg = QColor(TERM_CURSOR_BG)
+                    else:
+                        # hollow cursor outline
+                        painter.setPen(QColor(TERM_CURSOR_BG))
+                        painter.drawRect(px, py, cw - 1, ch - 1)
+
+                # background
+                if bg != QColor(TERM_BG_DEFAULT) or is_cur:
+                    painter.fillRect(px, py, cw, ch, bg)
+
+                # glyph
+                ch_data = char.data
+                if ch_data and ch_data != " ":
+                    if char.bold and char.italics:
+                        painter.setFont(self._font_bold_italic)
+                    elif char.bold:
+                        painter.setFont(self._font_bold)
+                    elif char.italics:
+                        painter.setFont(self._font_italic)
+                    else:
+                        painter.setFont(self._font)
+                    painter.setPen(fg)
+                    painter.drawText(px, py + self._ascent, ch_data)
+
+        painter.end()
+
+    # ── colour resolution ─────────────────────────────────────────────────────
+
+    @staticmethod
+    def _color(raw: str, default: str) -> QColor:
+        if not raw or raw == "default":
+            return QColor(default)
+        if len(raw) == 6 and all(c in "0123456789abcdefABCDEF" for c in raw):
+            return QColor("#" + raw)
+        if raw in _NAMED_COLORS:
+            return QColor(_NAMED_COLORS[raw])
+        # fallback: try as Qt color name
+        c = QColor(raw)
+        return c if c.isValid() else QColor(default)
+
+    # ── cursor blink ──────────────────────────────────────────────────────────
+
+    def _blink_tick(self):
+        self._cursor_on = not self._cursor_on
+        cx = self._screen.cursor.x * self._cw
+        cy = self._screen.cursor.y * self._ch
+        self.update(cx, cy, self._cw, self._ch)
+
+    def focusInEvent(self, event):
+        self._cursor_on = True
+        self._blink.start(530)
+        self.update()
+
+    def focusOutEvent(self, event):
+        self._blink.stop()
+        self._cursor_on = False
+        self.update()
+
+    # ── keyboard ─────────────────────────────────────────────────────────────
+
+    def keyPressEvent(self, event):
+        key  = event.key()
+        mods = event.modifiers()
+
+        # Named special keys
+        if key in _KEY_SEQS:
+            self._write(_KEY_SEQS[key])
+            return
+
+        # Core control keys
+        if key in (Qt.Key_Return, Qt.Key_Enter):
+            self._write(b"\r")
+            return
+        if key == Qt.Key_Backspace:
+            self._write(b"\x7f")
+            return
+        if key == Qt.Key_Tab:
+            if mods & Qt.ShiftModifier:
+                self._write(b"\x1b[Z")   # Shift-Tab / back-tab
+            else:
+                self._write(b"\t")
+            return
+        if key == Qt.Key_Escape:
+            self._write(b"\x1b")
+            return
+
+        # Ctrl + letter → control character
+        if mods & Qt.ControlModifier:
+            text = event.text()
+            if text:
+                lo = text.lower()
+                if "a" <= lo <= "z":
+                    self._write(bytes([ord(lo) - ord("a") + 1]))
+                    return
+                mapping = {"@": b"\x00", "[": b"\x1b", "\\": b"\x1c",
+                           "]": b"\x1d", "^": b"\x1e", "_": b"\x1f"}
+                if text in mapping:
+                    self._write(mapping[text])
+                    return
+
+        # Alt/Meta + key → ESC prefix
+        if mods & Qt.AltModifier:
+            text = event.text()
+            if text:
+                self._write(b"\x1b" + text.encode("utf-8"))
+                return
+
+        # Regular printable text
+        text = event.text()
+        if text:
+            self._write(text.encode("utf-8"))
+
+    def _write(self, data: bytes):
+        if self._pty:
+            self._pty.send_bytes(data)
+
+    # ── resize ────────────────────────────────────────────────────────────────
+
+    def resizeTerminal(self, cols: int, rows: int):
+        """Call when the user resizes the window — updates pyte + PTY."""
+        if cols == self._cols and rows == self._rows:
+            return
+        self._cols = cols
+        self._rows = rows
+        with self._lock:
+            self._screen.resize(rows, cols)
+        self.setFixedSize(cols * self._cw, rows * self._ch)
+        if self._pty:
+            self._pty.resize(cols, rows)
+
+    @property
+    def cols(self):
+        return self._cols
+
+    @property
+    def rows(self):
+        return self._rows
+
+
 # ─── Settings Panel ──────────────────────────────────────────────────────────
 
 class SettingsPanel(QWidget):
-    saved         = pyqtSignal(dict)
-    switch_agent  = pyqtSignal()
-    closed        = pyqtSignal()
+    saved        = pyqtSignal(dict)
+    switch_agent = pyqtSignal()
+    closed       = pyqtSignal()
 
     def __init__(self, cfg: dict, parent=None):
         super().__init__(parent)
         self._cfg = dict(cfg)
         self._build_ui()
 
-    # helper: label with fixed width so all rows align
     @staticmethod
     def _lbl(text: str) -> QLabel:
         l = QLabel(text)
@@ -449,15 +608,14 @@ class SettingsPanel(QWidget):
         return l
 
     def _build_ui(self):
-        ROW_H   = 34   # uniform height for all input controls
-        BTN_W   = 80   # uniform width for action buttons in rows
+        ROW_H   = 34
+        BTN_W   = 80
         SPACING = 14
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 16, 24, 16)
         layout.setSpacing(SPACING)
 
-        # ── Header ──
         hdr = QHBoxLayout()
         title = QLabel("SETTINGS")
         title.setObjectName("settingsTitle")
@@ -470,26 +628,23 @@ class SettingsPanel(QWidget):
         hdr.addWidget(close_btn)
         layout.addLayout(hdr)
 
-        # ── Model ──
-        row1 = QHBoxLayout()
-        row1.setSpacing(10)
+        # Model
+        row1 = QHBoxLayout(); row1.setSpacing(10)
         row1.addWidget(self._lbl("Default model"))
         self._model_combo = QComboBox()
         self._model_combo.setObjectName("settingsCombo")
         self._model_combo.setFixedHeight(ROW_H)
         for label, _ in AVAILABLE_MODELS:
             self._model_combo.addItem(label)
-        cur_model = self._cfg.get("model", "")
         for idx, (_, mid) in enumerate(AVAILABLE_MODELS):
-            if mid == cur_model:
+            if mid == self._cfg.get("model", ""):
                 self._model_combo.setCurrentIndex(idx)
                 break
         row1.addWidget(self._model_combo, 1)
         layout.addLayout(row1)
 
-        # ── Quick tools ──
-        row2 = QHBoxLayout()
-        row2.setSpacing(10)
+        # Quick tools
+        row2 = QHBoxLayout(); row2.setSpacing(10)
         row2.addWidget(self._lbl("Quick tools"))
         self._tools_read = QPushButton("Read-only")
         self._tools_read.setObjectName("toolsBtn")
@@ -510,50 +665,36 @@ class SettingsPanel(QWidget):
         row2.addStretch()
         layout.addLayout(row2)
 
-        # ── Divider ──
-        div = QFrame()
-        div.setFrameShape(QFrame.HLine)
-        div.setObjectName("settingsDivider")
+        div = QFrame(); div.setFrameShape(QFrame.HLine); div.setObjectName("settingsDivider")
         layout.addWidget(div)
 
-        # ── Advanced ──
-        adv = QLabel("Advanced")
-        adv.setObjectName("settingsSection")
+        adv = QLabel("Advanced"); adv.setObjectName("settingsSection")
         layout.addWidget(adv)
 
         # Working dir
-        wd_row = QHBoxLayout()
-        wd_row.setSpacing(10)
+        wd_row = QHBoxLayout(); wd_row.setSpacing(10)
         wd_row.addWidget(self._lbl("Working dir"))
         self._cwd_edit = QLineEdit(self._cfg.get("agent_cwd", "~"))
-        self._cwd_edit.setObjectName("settingsInput")
-        self._cwd_edit.setFixedHeight(ROW_H)
+        self._cwd_edit.setObjectName("settingsInput"); self._cwd_edit.setFixedHeight(ROW_H)
         browse_btn = QPushButton("Browse")
-        browse_btn.setObjectName("settingsBrowse")
-        browse_btn.setFixedSize(BTN_W, ROW_H)
+        browse_btn.setObjectName("settingsBrowse"); browse_btn.setFixedSize(BTN_W, ROW_H)
         browse_btn.clicked.connect(self._browse_cwd)
-        wd_row.addWidget(self._cwd_edit, 1)
-        wd_row.addWidget(browse_btn)
+        wd_row.addWidget(self._cwd_edit, 1); wd_row.addWidget(browse_btn)
         layout.addLayout(wd_row)
 
         # pi binary
-        pi_row = QHBoxLayout()
-        pi_row.setSpacing(10)
+        pi_row = QHBoxLayout(); pi_row.setSpacing(10)
         pi_row.addWidget(self._lbl("pi binary"))
         self._pi_edit = QLineEdit(self._cfg.get("pi_bin", ""))
-        self._pi_edit.setObjectName("settingsInput")
-        self._pi_edit.setFixedHeight(ROW_H)
+        self._pi_edit.setObjectName("settingsInput"); self._pi_edit.setFixedHeight(ROW_H)
         detect_btn = QPushButton("Detect")
-        detect_btn.setObjectName("settingsBrowse")
-        detect_btn.setFixedSize(BTN_W, ROW_H)
+        detect_btn.setObjectName("settingsBrowse"); detect_btn.setFixedSize(BTN_W, ROW_H)
         detect_btn.clicked.connect(self._detect_pi)
-        pi_row.addWidget(self._pi_edit, 1)
-        pi_row.addWidget(detect_btn)
+        pi_row.addWidget(self._pi_edit, 1); pi_row.addWidget(detect_btn)
         layout.addLayout(pi_row)
 
         # Font size
-        font_row = QHBoxLayout()
-        font_row.setSpacing(10)
+        font_row = QHBoxLayout(); font_row.setSpacing(10)
         font_row.addWidget(self._lbl("Font size"))
         self._font_size_edit = QLineEdit(str(self._cfg.get("font_size", 13)))
         self._font_size_edit.setObjectName("settingsInput")
@@ -562,43 +703,55 @@ class SettingsPanel(QWidget):
         font_row.addStretch()
         layout.addLayout(font_row)
 
-        # ── Actions ──
-        act_row = QHBoxLayout()
-        act_row.setSpacing(10)
+        # Terminal size
+        term_row = QHBoxLayout(); term_row.setSpacing(10)
+        term_row.addWidget(self._lbl("Terminal size"))
+        self._cols_edit = QLineEdit(str(self._cfg.get("terminal_cols", 118)))
+        self._cols_edit.setObjectName("settingsInput"); self._cols_edit.setFixedSize(52, ROW_H)
+        self._rows_edit = QLineEdit(str(self._cfg.get("terminal_rows", 34)))
+        self._rows_edit.setObjectName("settingsInput"); self._rows_edit.setFixedSize(52, ROW_H)
+        x_lbl = QLabel("×"); x_lbl.setFixedWidth(14)
+        term_row.addWidget(self._cols_edit)
+        term_row.addWidget(x_lbl)
+        term_row.addWidget(self._rows_edit)
+        term_row.addStretch()
+        layout.addLayout(term_row)
+
+        # Actions
+        act_row = QHBoxLayout(); act_row.setSpacing(10)
         agent_btn = QPushButton("⚡  Switch to Agent Mode")
-        agent_btn.setObjectName("agentSwitchBtn")
-        agent_btn.setFixedHeight(ROW_H)
+        agent_btn.setObjectName("agentSwitchBtn"); agent_btn.setFixedHeight(ROW_H)
         agent_btn.clicked.connect(self.switch_agent.emit)
         save_btn = QPushButton("Save")
-        save_btn.setObjectName("saveBtn")
-        save_btn.setFixedHeight(ROW_H)
+        save_btn.setObjectName("saveBtn"); save_btn.setFixedHeight(ROW_H)
         save_btn.clicked.connect(self._save)
-        act_row.addWidget(agent_btn)
-        act_row.addStretch()
-        act_row.addWidget(save_btn)
+        act_row.addWidget(agent_btn); act_row.addStretch(); act_row.addWidget(save_btn)
         layout.addLayout(act_row)
 
     def _browse_cwd(self):
-        d = QFileDialog.getExistingDirectory(self, "Choose working directory",
-                                             os.path.expanduser(self._cwd_edit.text()))
+        d = QFileDialog.getExistingDirectory(
+            self, "Choose working directory",
+            os.path.expanduser(self._cwd_edit.text()))
         if d:
             self._cwd_edit.setText(d)
 
     def _detect_pi(self):
         p = find_pi_binary()
-        if p:
-            self._pi_edit.setText(p)
-        else:
-            self._pi_edit.setText("not found — install with: npm install -g @anthropic-ai/claude-code")
+        self._pi_edit.setText(p if p else "not found — install: npm install -g @badlogic/pi")
 
     def _save(self):
         idx = self._model_combo.currentIndex()
-        self._cfg["model"]      = AVAILABLE_MODELS[idx][1]
-        self._cfg["quick_tools"]= "read" if self._tools_read.isChecked() else "all"
-        self._cfg["agent_cwd"]  = self._cwd_edit.text()
-        self._cfg["pi_bin"]     = self._pi_edit.text()
+        self._cfg["model"]         = AVAILABLE_MODELS[idx][1]
+        self._cfg["quick_tools"]   = "read" if self._tools_read.isChecked() else "all"
+        self._cfg["agent_cwd"]     = self._cwd_edit.text()
+        self._cfg["pi_bin"]        = self._pi_edit.text()
         try:
             self._cfg["font_size"] = int(self._font_size_edit.text())
+        except ValueError:
+            pass
+        try:
+            self._cfg["terminal_cols"] = int(self._cols_edit.text())
+            self._cfg["terminal_rows"] = int(self._rows_edit.text())
         except ValueError:
             pass
         self.saved.emit(self._cfg)
@@ -609,15 +762,15 @@ class SettingsPanel(QWidget):
 class SpotlightWindow(QWidget):
     def __init__(self):
         super().__init__()
-        self._cfg            = load_config()
-        self._current_model  = self._cfg["model"]
-        self._mode           = "quick"     # "quick" | "agent"
-        self._worker         = None        # PiWorker in quick mode
-        self._pty_worker     = None        # PtyWorker in agent mode
-        self._expanded       = False
-        self._settings_open  = False
-        self._in_thinking    = False
-        self._ansi           = AnsiRenderer()
+        self._cfg           = load_config()
+        self._current_model = self._cfg["model"]
+        self._mode          = "quick"
+        self._worker        = None   # PiWorker  (quick)
+        self._pty_worker    = None   # PtyWorker (agent)
+        self._term_widget   = None   # TerminalWidget
+        self._expanded      = False
+        self._settings_open = False
+        self._in_thinking   = False
 
         self._setup_window()
         self._setup_ui()
@@ -626,11 +779,7 @@ class SpotlightWindow(QWidget):
     # ── Window ────────────────────────────────────────────────────────────────
 
     def _setup_window(self):
-        self.setWindowFlags(
-            Qt.FramelessWindowHint |
-            Qt.WindowStaysOnTopHint |
-            Qt.Tool
-        )
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setFixedWidth(WINDOW_W_QUICK)
         self.setFixedHeight(WINDOW_H_QUICK)
@@ -639,7 +788,7 @@ class SpotlightWindow(QWidget):
     def _center_on_screen(self):
         screen = QApplication.primaryScreen().geometry()
         x = (screen.width() - self.width()) // 2
-        y = int(screen.height() * self._cfg.get("position_y_fraction", 0.15))
+        y = int(screen.height() * self._cfg.get("position_y_fraction", 0.10))
         self.move(x, y)
 
     # ── UI ────────────────────────────────────────────────────────────────────
@@ -653,13 +802,12 @@ class SpotlightWindow(QWidget):
         self._card.setObjectName("card")
         self._card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
-        card_layout = QVBoxLayout(self._card)
-        card_layout.setContentsMargins(20, 16, 20, 16)
-        card_layout.setSpacing(10)
+        cl = QVBoxLayout(self._card)
+        cl.setContentsMargins(20, 16, 20, 16)
+        cl.setSpacing(10)
 
-        # ── Header row ──
-        header_row = QHBoxLayout()
-        header_row.setSpacing(10)
+        # ── Header ──
+        hdr = QHBoxLayout(); hdr.setSpacing(10)
 
         self._icon = QLabel("⌘")
         self._icon.setObjectName("icon")
@@ -681,7 +829,6 @@ class SpotlightWindow(QWidget):
         self._model_picker.setObjectName("modelPicker")
         for label, _ in AVAILABLE_MODELS:
             self._model_picker.addItem(label)
-        # Select current model
         for idx, (_, mid) in enumerate(AVAILABLE_MODELS):
             if mid == self._current_model:
                 self._model_picker.setCurrentIndex(idx)
@@ -691,26 +838,24 @@ class SpotlightWindow(QWidget):
         self._model_picker.setFixedHeight(36)
         self._model_picker.setMinimumWidth(120)
 
-        # Mode toggle button
         self._mode_btn = QPushButton("⚡ Agent")
         self._mode_btn.setObjectName("modeBtn")
         self._mode_btn.setFixedHeight(36)
         self._mode_btn.setFocusPolicy(Qt.NoFocus)
         self._mode_btn.clicked.connect(self._toggle_mode)
 
-        # Settings gear
         self._gear_btn = QPushButton("⚙")
         self._gear_btn.setObjectName("gearBtn")
         self._gear_btn.setFixedSize(36, 36)
         self._gear_btn.setFocusPolicy(Qt.NoFocus)
         self._gear_btn.clicked.connect(self._toggle_settings)
 
-        header_row.addWidget(self._icon)
-        header_row.addWidget(self._input, 1)
-        header_row.addWidget(self._model_picker)
-        header_row.addWidget(self._mode_btn)
-        header_row.addWidget(self._gear_btn)
-        header_row.addWidget(self._spinner)
+        hdr.addWidget(self._icon)
+        hdr.addWidget(self._input, 1)
+        hdr.addWidget(self._model_picker)
+        hdr.addWidget(self._mode_btn)
+        hdr.addWidget(self._gear_btn)
+        hdr.addWidget(self._spinner)
 
         # ── Divider ──
         self._divider = QWidget()
@@ -718,51 +863,39 @@ class SpotlightWindow(QWidget):
         self._divider.setFixedHeight(1)
         self._divider.hide()
 
-        # ── Quick mode: response area ──
+        # ── Quick response area ──
         self._response = QTextEdit()
         self._response.setObjectName("response")
         self._response.setReadOnly(True)
         self._response.setMinimumHeight(200)
         self._response.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self._response.hide()
         self._response.setLineWrapMode(QTextEdit.WidgetWidth)
+        self._response.hide()
 
-        # ── Agent mode: output area ──
-        self._agent_output = QTextEdit()
-        self._agent_output.setObjectName("agentOutput")
-        self._agent_output.setReadOnly(True)
-        self._agent_output.hide()
-        self._agent_output.setLineWrapMode(QTextEdit.WidgetWidth)
-        self._agent_output.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        # ── Agent: terminal container ──
+        # TerminalWidget is created/destroyed on mode switch
+        self._term_container = QWidget()
+        self._term_container.setObjectName("termContainer")
+        self._term_container.hide()
+        self._term_layout = QVBoxLayout(self._term_container)
+        self._term_layout.setContentsMargins(0, 0, 0, 0)
+        self._term_layout.setSpacing(0)
 
-        # Agent input row
-        self._agent_input_row = QWidget()
-        self._agent_input_row.hide()
-        ai_layout = QVBoxLayout(self._agent_input_row)
-        ai_layout.setContentsMargins(0, 4, 0, 0)
-        ai_layout.setSpacing(4)
-
-        self._agent_input = QLineEdit()
-        self._agent_input.setObjectName("agentInput")
-        self._agent_input.setPlaceholderText("❯ type here, enter sends to pi…")
-        self._agent_input.setFixedHeight(36)
-        self._agent_input.returnPressed.connect(self._agent_send)
-
-        self._agent_hint = QLabel(
-            "↵ send  ·  ctrl+c interrupt  ·  esc hide  ·  ctrl+q quick mode"
+        # ── Hints ──
+        self._hint = QLabel(
+            "↵ ask  ·  esc close  ·  ctrl+l clear  ·  ctrl+m model  ·  ctrl+a agent"
         )
-        self._agent_hint.setObjectName("hint")
-        self._agent_hint.setAlignment(Qt.AlignCenter)
-
-        ai_layout.addWidget(self._agent_input)
-        ai_layout.addWidget(self._agent_hint)
-
-        # ── Quick mode hint ──
-        self._hint = QLabel("↵ ask  ·  esc close  ·  ctrl+l clear  ·  ctrl+m model  ·  ctrl+a agent")
         self._hint.setObjectName("hint")
         self._hint.setAlignment(Qt.AlignCenter)
 
-        # ── Settings panel ──
+        self._agent_hint = QLabel(
+            "esc hide  ·  ctrl+q quick mode  ·  ctrl+c interrupt  ·  ctrl+l clear  ·  ↺ new session: ctrl+n"
+        )
+        self._agent_hint.setObjectName("hint")
+        self._agent_hint.setAlignment(Qt.AlignCenter)
+        self._agent_hint.hide()
+
+        # ── Settings ──
         self._settings_panel = SettingsPanel(self._cfg)
         self._settings_panel.setObjectName("settingsPanel")
         self._settings_panel.saved.connect(self._on_settings_saved)
@@ -770,18 +903,18 @@ class SpotlightWindow(QWidget):
         self._settings_panel.closed.connect(self._close_settings)
         self._settings_panel.hide()
 
-        card_layout.addLayout(header_row)
-        card_layout.addWidget(self._divider)
-        card_layout.addWidget(self._response, 1)
-        card_layout.addWidget(self._agent_output, 1)
-        card_layout.addWidget(self._agent_input_row)
-        card_layout.addWidget(self._hint)
-        card_layout.addWidget(self._settings_panel)
+        cl.addLayout(hdr)
+        cl.addWidget(self._divider)
+        cl.addWidget(self._response, 1)
+        cl.addWidget(self._term_container, 1)
+        cl.addWidget(self._hint)
+        cl.addWidget(self._agent_hint)
+        cl.addWidget(self._settings_panel)
 
         root.addWidget(self._card, 1)
         self._apply_styles()
 
-        # Spinner
+        # Spinner animation
         self._spin_chars = ["◐", "◓", "◑", "◒"]
         self._spin_idx   = 0
         self._spin_timer = QTimer()
@@ -792,18 +925,18 @@ class SpotlightWindow(QWidget):
     def _apply_styles(self):
         fs = self._cfg.get("font_size", 13)
         ff = self._cfg.get("font_family", "JetBrains Mono")
-        mono_stack = f"'{ff}', 'Fira Code', 'Cascadia Code', monospace"
+        mono = f"'{ff}', 'Fira Code', 'Cascadia Code', monospace"
 
         self.setStyleSheet(f"""
             QWidget#card {{
                 background: rgba(18, 18, 22, 0.93);
                 border-radius: 16px;
-                border: 1px solid rgba(255, 255, 255, 0.08);
+                border: 1px solid rgba(255,255,255,0.08);
             }}
             QLabel#icon {{
                 color: #7c6af7;
                 font-size: 18px;
-                background: rgba(124, 106, 247, 0.15);
+                background: rgba(124,106,247,0.15);
                 border-radius: 8px;
                 font-family: monospace;
             }}
@@ -812,213 +945,170 @@ class SpotlightWindow(QWidget):
                 border: none;
                 color: #f0eeff;
                 font-size: 18px;
-                font-family: 'SF Pro Display', 'Segoe UI', 'Noto Sans', sans-serif;
+                font-family: 'SF Pro Display','Segoe UI','Noto Sans',sans-serif;
                 selection-background-color: #7c6af7;
             }}
-            QLabel#spinner {{
-                color: #7c6af7;
-                font-size: 16px;
-            }}
+            QLabel#spinner {{ color:#7c6af7; font-size:16px; }}
             QComboBox#modelPicker {{
-                background: rgba(124, 106, 247, 0.12);
-                border: 1px solid rgba(124, 106, 247, 0.25);
+                background: rgba(124,106,247,0.12);
+                border: 1px solid rgba(124,106,247,0.25);
                 border-radius: 6px;
-                color: rgba(180, 170, 255, 0.85);
+                color: rgba(180,170,255,0.85);
                 font-size: 12px;
-                padding: 0px 8px;
+                padding: 0 8px;
             }}
-            QComboBox#modelPicker:hover {{
-                border-color: rgba(124, 106, 247, 0.55);
-            }}
-            QComboBox#modelPicker::drop-down {{ border: none; width: 16px; }}
+            QComboBox#modelPicker:hover {{ border-color: rgba(124,106,247,0.55); }}
+            QComboBox#modelPicker::drop-down {{ border:none; width:16px; }}
             QComboBox#modelPicker::down-arrow {{
-                image: none;
-                border-left: 4px solid transparent;
-                border-right: 4px solid transparent;
-                border-top: 5px solid rgba(124, 106, 247, 0.7);
+                image:none;
+                border-left:4px solid transparent;
+                border-right:4px solid transparent;
+                border-top:5px solid rgba(124,106,247,0.7);
             }}
             QComboBox QAbstractItemView {{
-                background: rgba(22, 20, 32, 0.97);
-                border: 1px solid rgba(124, 106, 247, 0.3);
+                background: rgba(22,20,32,0.97);
+                border: 1px solid rgba(124,106,247,0.3);
                 border-radius: 8px;
                 color: #c8c0f5;
-                font-size: 12px;
-                selection-background-color: rgba(124, 106, 247, 0.35);
-                padding: 4px;
+                font-size:12px;
+                selection-background-color: rgba(124,106,247,0.35);
+                padding:4px;
             }}
             QPushButton#modeBtn {{
-                background: rgba(255, 200, 50, 0.10);
-                border: 1px solid rgba(255, 200, 50, 0.25);
+                background: rgba(255,200,50,0.10);
+                border: 1px solid rgba(255,200,50,0.25);
                 border-radius: 6px;
-                color: rgba(255, 210, 80, 0.85);
+                color: rgba(255,210,80,0.85);
                 font-size: 12px;
-                padding: 0px 10px;
+                padding: 0 10px;
             }}
             QPushButton#modeBtn:hover {{
-                background: rgba(255, 200, 50, 0.20);
-                border-color: rgba(255, 200, 50, 0.5);
+                background: rgba(255,200,50,0.20);
+                border-color: rgba(255,200,50,0.5);
             }}
             QPushButton#modeBtn[mode="quick"] {{
-                background: rgba(100, 200, 150, 0.10);
-                border: 1px solid rgba(100, 200, 150, 0.25);
-                color: rgba(120, 220, 160, 0.85);
+                background: rgba(100,200,150,0.10);
+                border-color: rgba(100,200,150,0.25);
+                color: rgba(120,220,160,0.85);
             }}
             QPushButton#gearBtn {{
                 background: transparent;
-                border: 1px solid rgba(255, 255, 255, 0.08);
+                border: 1px solid rgba(255,255,255,0.08);
                 border-radius: 6px;
-                color: rgba(160, 150, 210, 0.6);
+                color: rgba(160,150,210,0.6);
                 font-size: 16px;
             }}
             QPushButton#gearBtn:hover {{
-                background: rgba(255, 255, 255, 0.05);
-                color: rgba(180, 170, 255, 0.9);
+                background: rgba(255,255,255,0.05);
+                color: rgba(180,170,255,0.9);
             }}
-            QWidget#divider {{
-                background: rgba(255, 255, 255, 0.07);
-            }}
-            QTextEdit#response, QTextEdit#agentOutput {{
+            QWidget#divider {{ background: rgba(255,255,255,0.07); }}
+            QTextEdit#response {{
                 background: transparent;
                 border: none;
                 color: #c8c0f5;
                 font-size: {fs}px;
-                font-family: {mono_stack};
+                font-family: {mono};
                 selection-background-color: #7c6af7;
             }}
+            QWidget#termContainer {{
+                background: {TERM_BG_DEFAULT};
+                border-radius: 8px;
+                border: 1px solid rgba(124,106,247,0.15);
+            }}
             QScrollBar:vertical {{
-                background: transparent;
-                width: 6px;
+                background: transparent; width: 6px;
             }}
             QScrollBar::handle:vertical {{
-                background: rgba(124, 106, 247, 0.4);
+                background: rgba(124,106,247,0.4);
                 border-radius: 3px;
                 min-height: 20px;
             }}
-            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height:0; }}
             QLabel#hint {{
-                color: rgba(150, 140, 200, 0.35);
+                color: rgba(150,140,200,0.35);
                 font-size: 11px;
-                font-family: 'Noto Sans', sans-serif;
+                font-family: 'Noto Sans',sans-serif;
                 padding-top: 2px;
             }}
-            QLineEdit#agentInput {{
-                background: rgba(255, 255, 255, 0.04);
-                border: 1px solid rgba(124, 106, 247, 0.2);
-                border-radius: 6px;
-                color: #e0dcff;
-                font-size: {fs}px;
-                font-family: {mono_stack};
-                padding: 0 10px;
-                selection-background-color: #7c6af7;
-            }}
+            /* settings */
             QWidget#settingsPanel {{
-                background: rgba(14, 13, 20, 0.6);
-                border-top: 1px solid rgba(255, 255, 255, 0.07);
+                background: rgba(14,13,20,0.6);
+                border-top: 1px solid rgba(255,255,255,0.07);
                 border-radius: 0 0 14px 14px;
             }}
             QLabel#settingsTitle {{
-                color: rgba(180, 170, 255, 0.5);
-                font-size: 10px;
-                font-family: monospace;
-                letter-spacing: 2px;
+                color: rgba(180,170,255,0.5);
+                font-size:10px; font-family:monospace; letter-spacing:2px;
             }}
             QLabel#settingsSection {{
-                color: rgba(150, 140, 200, 0.4);
-                font-size: 10px;
-                font-family: monospace;
-                letter-spacing: 1px;
+                color: rgba(150,140,200,0.4);
+                font-size:10px; font-family:monospace; letter-spacing:1px;
             }}
             QPushButton#settingsClose {{
-                background: transparent;
-                border: none;
-                color: rgba(200, 180, 255, 0.4);
-                font-size: 14px;
+                background:transparent; border:none;
+                color: rgba(200,180,255,0.4); font-size:14px;
             }}
-            QPushButton#settingsClose:hover {{ color: #e06c6c; }}
-            QWidget#settingsPanel QLabel {{
-                color: rgba(180, 170, 255, 0.7);
-                font-size: 12px;
-            }}
+            QPushButton#settingsClose:hover {{ color:#e06c6c; }}
+            QWidget#settingsPanel QLabel {{ color:rgba(180,170,255,0.7); font-size:12px; }}
             QComboBox#settingsCombo {{
-                background: rgba(124, 106, 247, 0.12);
-                border: 1px solid rgba(124, 106, 247, 0.25);
-                border-radius: 5px;
-                color: #c8c0f5;
-                font-size: 12px;
-                padding: 2px 8px;
-                min-width: 140px;
+                background: rgba(124,106,247,0.12);
+                border: 1px solid rgba(124,106,247,0.25);
+                border-radius:5px; color:#c8c0f5; font-size:12px;
+                padding:2px 8px; min-width:140px;
             }}
             QComboBox#settingsCombo QAbstractItemView {{
-                background: rgba(22, 20, 32, 0.97);
-                border: 1px solid rgba(124, 106, 247, 0.3);
-                color: #c8c0f5;
-                selection-background-color: rgba(124, 106, 247, 0.35);
+                background:rgba(22,20,32,0.97);
+                border:1px solid rgba(124,106,247,0.3);
+                color:#c8c0f5;
+                selection-background-color:rgba(124,106,247,0.35);
             }}
             QLineEdit#settingsInput {{
-                background: rgba(255, 255, 255, 0.05);
-                border: 1px solid rgba(255, 255, 255, 0.1);
-                border-radius: 5px;
-                color: #c8c0f5;
-                font-size: 12px;
-                font-family: monospace;
-                padding: 4px 8px;
-                min-height: 28px;
+                background:rgba(255,255,255,0.05);
+                border:1px solid rgba(255,255,255,0.1);
+                border-radius:5px; color:#c8c0f5;
+                font-size:12px; font-family:monospace;
+                padding:4px 8px; min-height:28px;
             }}
             QPushButton#toolsBtn {{
-                background: rgba(124, 106, 247, 0.10);
-                border: 1px solid rgba(124, 106, 247, 0.2);
-                border-radius: 5px;
-                color: rgba(180, 170, 255, 0.7);
-                font-size: 11px;
-                padding: 3px 10px;
+                background:rgba(124,106,247,0.10);
+                border:1px solid rgba(124,106,247,0.2);
+                border-radius:5px; color:rgba(180,170,255,0.7);
+                font-size:11px; padding:3px 10px;
             }}
             QPushButton#toolsBtn:checked {{
-                background: rgba(124, 106, 247, 0.30);
-                border-color: rgba(124, 106, 247, 0.6);
-                color: #c8c0f5;
+                background:rgba(124,106,247,0.30);
+                border-color:rgba(124,106,247,0.6); color:#c8c0f5;
             }}
             QPushButton#settingsBrowse {{
-                background: rgba(255, 255, 255, 0.06);
-                border: 1px solid rgba(255, 255, 255, 0.1);
-                border-radius: 5px;
-                color: rgba(180, 170, 255, 0.7);
-                font-size: 11px;
-                padding: 3px 10px;
+                background:rgba(255,255,255,0.06);
+                border:1px solid rgba(255,255,255,0.1);
+                border-radius:5px; color:rgba(180,170,255,0.7);
+                font-size:11px; padding:3px 10px;
             }}
             QPushButton#settingsBrowse:hover {{
-                background: rgba(255, 255, 255, 0.10);
-                color: #c8c0f5;
+                background:rgba(255,255,255,0.10); color:#c8c0f5;
             }}
-            QFrame#settingsDivider {{
-                color: rgba(255, 255, 255, 0.07);
-            }}
+            QFrame#settingsDivider {{ color:rgba(255,255,255,0.07); }}
             QPushButton#agentSwitchBtn {{
-                background: rgba(255, 200, 50, 0.10);
-                border: 1px solid rgba(255, 200, 50, 0.25);
-                border-radius: 6px;
-                color: rgba(255, 210, 80, 0.85);
-                font-size: 12px;
-                padding: 4px 14px;
+                background:rgba(255,200,50,0.10);
+                border:1px solid rgba(255,200,50,0.25);
+                border-radius:6px; color:rgba(255,210,80,0.85);
+                font-size:12px; padding:4px 14px;
             }}
-            QPushButton#agentSwitchBtn:hover {{
-                background: rgba(255, 200, 50, 0.20);
-            }}
+            QPushButton#agentSwitchBtn:hover {{ background:rgba(255,200,50,0.20); }}
             QPushButton#saveBtn {{
-                background: rgba(124, 106, 247, 0.25);
-                border: 1px solid rgba(124, 106, 247, 0.5);
-                border-radius: 6px;
-                color: #c8c0f5;
-                font-size: 12px;
-                padding: 4px 18px;
+                background:rgba(124,106,247,0.25);
+                border:1px solid rgba(124,106,247,0.5);
+                border-radius:6px; color:#c8c0f5;
+                font-size:12px; padding:4px 18px;
             }}
-            QPushButton#saveBtn:hover {{
-                background: rgba(124, 106, 247, 0.40);
-            }}
+            QPushButton#saveBtn:hover {{ background:rgba(124,106,247,0.40); }}
         """)
 
     # ── paint (glow shadow) ───────────────────────────────────────────────────
 
-    def paintEvent(self, event):
+    def paintEvent(self, _event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         for i in range(10, 0, -1):
@@ -1028,10 +1118,11 @@ class SpotlightWindow(QWidget):
             r = QPainterPath()
             r.addRoundedRect(4 - i, 4 - i,
                              self.width() - 8 + i * 2,
-                             self.height() - 8 + i * 2, 16 + i, 16 + i)
+                             self.height() - 8 + i * 2,
+                             16 + i, 16 + i)
             painter.drawPath(r)
 
-    # ── Toggle show / hide ────────────────────────────────────────────────────
+    # ── Toggle show/hide ──────────────────────────────────────────────────────
 
     def toggle(self):
         if self.isVisible():
@@ -1048,15 +1139,15 @@ class SpotlightWindow(QWidget):
             self._input.clear()
             self._collapse_response()
             self._input.setFocus()
-        else:
-            self._agent_input.setFocus()
+        elif self._term_widget:
+            self._term_widget.setFocus()
 
     def _hide_window(self):
         if self._worker:
             self._worker.stop()
         self.hide()
 
-    # ── Quick mode: expand / collapse ────────────────────────────────────────
+    # ── Quick mode ────────────────────────────────────────────────────────────
 
     def _expand_response(self):
         if self._expanded:
@@ -1091,35 +1182,33 @@ class SpotlightWindow(QWidget):
         self._mode_btn.setProperty("mode", "quick")
         self._mode_btn.style().polish(self._mode_btn)
 
+        # Hide quick-mode widgets
         self._input.hide()
         self._model_picker.hide()
         self._hint.hide()
         self._collapse_response()
         self._response.hide()
 
+        # Show agent widgets
         self._divider.show()
-        self._agent_output.show()
-        self._agent_input_row.show()
-
-        self._set_window_size(WINDOW_W_AGENT, WINDOW_H_AGENT)
-
+        self._agent_hint.show()
         self._icon.setText("⚡")
-        self._input.setPlaceholderText("")
-
         self._close_settings()
-        self._start_pty()
+
+        # Create & attach terminal widget
+        self._create_terminal()
 
     def _enter_quick_mode(self):
         if self._mode == "quick":
             return
-        self._stop_pty()
+        self._destroy_terminal()
         self._mode = "quick"
         self._mode_btn.setText("⚡ Agent")
         self._mode_btn.setProperty("mode", "")
         self._mode_btn.style().polish(self._mode_btn)
 
-        self._agent_output.hide()
-        self._agent_input_row.hide()
+        self._term_container.hide()
+        self._agent_hint.hide()
         self._divider.hide()
 
         self._input.show()
@@ -1134,52 +1223,62 @@ class SpotlightWindow(QWidget):
         self._close_settings()
         self._enter_agent_mode()
 
-    # ── PTY management ────────────────────────────────────────────────────────
+    # ── Terminal lifecycle ────────────────────────────────────────────────────
 
-    def _start_pty(self):
-        self._stop_pty()
-        self._agent_output.clear()
-        self._ansi = AnsiRenderer()
+    def _create_terminal(self):
+        """Build TerminalWidget, start PTY, resize window to fit."""
+        self._destroy_terminal()
 
+        cols = self._cfg.get("terminal_cols", 118)
+        rows = self._cfg.get("terminal_rows", 34)
+        ff   = self._cfg.get("font_family", "JetBrains Mono")
+        fs   = self._cfg.get("font_size", 13)
+
+        term = TerminalWidget(cols, rows, ff, fs, parent=self._term_container)
+        self._term_layout.addWidget(term)
+        self._term_container.show()
+        self._term_widget = term
+
+        # Window size = terminal pixel size + card chrome
+        # chrome: left(20)+right(20) margins + top(16)+hdr(40)+sp(10)+div(1)+sp(10) + sp(10)+hint(15)+bot(16)
+        win_w = term.width()  + CARD_MARGIN_H
+        win_h = term.height() + CARD_MARGIN_V
+        self._set_window_size(win_w, win_h)
+
+        # Start PTY
         pi_bin = self._cfg.get("pi_bin", "") or find_pi_binary()
         cwd    = self._cfg.get("agent_cwd", "~")
+        w = PtyWorker(pi_bin, self._current_model, cwd, cols, rows)
+        w.output.connect(term.feed)
+        w.finished.connect(self._on_pty_done)
+        w.start()
+        self._pty_worker = w
 
-        self._pty_worker = PtyWorker(pi_bin, self._current_model, cwd)
-        self._pty_worker.output.connect(self._on_pty_output)
-        self._pty_worker.finished.connect(self._on_pty_done)
-        self._pty_worker.start()
+        term.attach_pty(w)
+        term.setFocus()
 
-    def _stop_pty(self):
+    def _destroy_terminal(self):
         if self._pty_worker:
             self._pty_worker.stop()
-            self._pty_worker.wait(2000)
+            self._pty_worker.wait(3000)
             self._pty_worker = None
-
-    def _on_pty_output(self, raw: bytes):
-        html_frag = self._ansi.feed(raw)
-        if html_frag:
-            cursor = self._agent_output.textCursor()
-            cursor.movePosition(QTextCursor.End)
-            cursor.insertHtml(html_frag)
-            self._agent_output.setTextCursor(cursor)
-            self._agent_output.ensureCursorVisible()
+        if self._term_widget:
+            self._term_layout.removeWidget(self._term_widget)
+            self._term_widget.deleteLater()
+            self._term_widget = None
 
     def _on_pty_done(self):
-        cursor = self._agent_output.textCursor()
-        cursor.movePosition(QTextCursor.End)
-        cursor.insertHtml('<br><span style="color:rgba(124,106,247,0.4);">[pi session ended]</span>')
-        self._agent_output.setTextCursor(cursor)
+        """PTY process exited — show a brief overlay message in the terminal."""
+        if self._term_widget:
+            self._term_widget.feed(
+                b"\r\n\x1b[38;5;240m[pi session ended - ctrl+n to restart]\x1b[0m\r\n"
+            )
 
-    def _agent_send(self):
-        text = self._agent_input.text()
-        self._agent_input.clear()
-        if self._pty_worker and self._pty_worker.isRunning():
-            self._pty_worker.send_input(text)
-        else:
-            # Session ended — restart
-            self._start_pty()
+    def _restart_session(self):
+        """ctrl+n: destroy and recreate the terminal + PTY."""
+        self._create_terminal()
 
-    # ── Quick mode: submit ────────────────────────────────────────────────────
+    # ── Quick-mode submission ─────────────────────────────────────────────────
 
     def _on_input_enter(self):
         if self._mode == "quick":
@@ -1221,8 +1320,10 @@ class SpotlightWindow(QWidget):
             self._insert_html(
                 '<span style="color:#5a4fa0;font-size:11px;font-style:italic;">💭 thinking</span><br>'
             )
-        escaped = html.escape(text).replace("\n", "<br>")
-        self._insert_html(f'<span style="color:#6b5fbf;font-size:12px;font-style:italic;">{escaped}</span>')
+        self._insert_html(
+            f'<span style="color:#6b5fbf;font-size:12px;font-style:italic;">'
+            f'{html.escape(text).replace(chr(10), "<br>")}</span>'
+        )
 
     def _on_chunk(self, text: str):
         if self._in_thinking:
@@ -1230,8 +1331,10 @@ class SpotlightWindow(QWidget):
             self._insert_html(
                 '<br><span style="color:rgba(124,106,247,0.3);">──────────────────</span><br>'
             )
-        escaped = html.escape(text).replace("\n", "<br>")
-        self._insert_html(f'<span style="color:#c8c0f5;font-size:14px;">{escaped}</span>')
+        self._insert_html(
+            f'<span style="color:#c8c0f5;font-size:14px;">'
+            f'{html.escape(text).replace(chr(10), "<br>")}</span>'
+        )
 
     def _on_done(self):
         self._spin_timer.stop()
@@ -1267,14 +1370,12 @@ class SpotlightWindow(QWidget):
 
     def _open_settings(self):
         self._settings_open = True
-        # Rebuild panel with current cfg
         self._settings_panel.deleteLater()
         self._settings_panel = SettingsPanel(self._cfg)
         self._settings_panel.setObjectName("settingsPanel")
         self._settings_panel.saved.connect(self._on_settings_saved)
         self._settings_panel.switch_agent.connect(self._switch_to_agent_from_settings)
         self._settings_panel.closed.connect(self._close_settings)
-        # Insert into card layout (last widget)
         self._card.layout().addWidget(self._settings_panel)
         self._apply_styles()
         self._settings_panel.show()
@@ -1293,24 +1394,24 @@ class SpotlightWindow(QWidget):
         self._center_on_screen()
 
     def _resize_for_content(self):
-        # Settings panel natural height: header + 6 rows * (34+14) + divider + margins ≈ 340px
-        SETTINGS_H = 340
-        if self._mode == "agent":
-            extra_h = SETTINGS_H if self._settings_open else 0
-            self._set_window_size(WINDOW_W_AGENT, WINDOW_H_AGENT + extra_h)
+        SETTINGS_H = 380
+        if self._mode == "agent" and self._term_widget:
+            extra = SETTINGS_H if self._settings_open else 0
+            base_w = self._term_widget.width()  + CARD_MARGIN_H
+            base_h = self._term_widget.height() + CARD_MARGIN_V
+            self._set_window_size(base_w, base_h + extra)
         elif self._expanded:
-            extra_h = SETTINGS_H if self._settings_open else 0
+            extra = SETTINGS_H if self._settings_open else 0
             w = WINDOW_W_SETTINGS if self._settings_open else WINDOW_W_QUICK
-            self._set_window_size(w, WINDOW_H_QUICK_X + extra_h)
+            self._set_window_size(w, WINDOW_H_QUICK_X + extra)
         else:
-            extra_h = SETTINGS_H if self._settings_open else 0
+            extra = SETTINGS_H if self._settings_open else 0
             w = WINDOW_W_SETTINGS if self._settings_open else WINDOW_W_QUICK
-            self._set_window_size(w, WINDOW_H_QUICK + extra_h)
+            self._set_window_size(w, WINDOW_H_QUICK + extra)
 
     def _on_settings_saved(self, new_cfg: dict):
-        self._cfg = new_cfg
+        self._cfg           = new_cfg
         self._current_model = new_cfg.get("model", self._current_model)
-        # Update model picker
         for idx, (_, mid) in enumerate(AVAILABLE_MODELS):
             if mid == self._current_model:
                 self._model_picker.setCurrentIndex(idx)
@@ -1318,6 +1419,9 @@ class SpotlightWindow(QWidget):
         save_config(self._cfg)
         self._apply_styles()
         self._close_settings()
+        # Recreate terminal if in agent mode (new font/size/cols may apply)
+        if self._mode == "agent":
+            self._create_terminal()
 
     # ── Key events ────────────────────────────────────────────────────────────
 
@@ -1327,34 +1431,42 @@ class SpotlightWindow(QWidget):
 
         if key == Qt.Key_Escape:
             self._hide_window()
-        elif key == Qt.Key_L and mods == Qt.ControlModifier:
-            if self._mode == "quick":
-                self._collapse_response()
-                self._input.clear()
-                self._input.setFocus()
-            else:
-                self._agent_output.clear()
+            return
+
+        if self._mode == "agent":
+            # Agent-mode window-level shortcuts (not forwarded to terminal)
+            if key == Qt.Key_Q and mods == Qt.ControlModifier:
+                self._enter_quick_mode()
+                return
+            if key == Qt.Key_N and mods == Qt.ControlModifier:
+                self._restart_session()
+                return
+            if key == Qt.Key_L and mods == Qt.ControlModifier:
+                # Clear screen — send Ctrl+L to terminal
+                if self._term_widget:
+                    self._term_widget._write(b"\x0c")
+                return
+            # Everything else → terminal widget
+            if self._term_widget:
+                self._term_widget.keyPressEvent(event)
+            return
+
+        # Quick mode shortcuts
+        if key == Qt.Key_L and mods == Qt.ControlModifier:
+            self._collapse_response()
+            self._input.clear()
+            self._input.setFocus()
         elif key == Qt.Key_M and mods == Qt.ControlModifier:
             self._cycle_model()
         elif key == Qt.Key_A and mods == Qt.ControlModifier:
-            if self._mode == "quick":
-                self._enter_agent_mode()
-        elif key == Qt.Key_Q and mods == Qt.ControlModifier:
-            if self._mode == "agent":
-                self._enter_quick_mode()
-        elif key == Qt.Key_C and mods == Qt.ControlModifier:
-            if self._mode == "agent" and self._pty_worker:
-                self._pty_worker.send_key(b"\x03")
-            elif self._worker:
-                self._worker.stop()
+            self._enter_agent_mode()
         else:
             super().keyPressEvent(event)
 
-    # ── Socket ────────────────────────────────────────────────────────────────
+    # ── Socket listener ───────────────────────────────────────────────────────
 
     def _setup_socket_listener(self):
-        t = threading.Thread(target=self._socket_server, daemon=True)
-        t.start()
+        threading.Thread(target=self._socket_server, daemon=True).start()
 
     def _socket_server(self):
         if os.path.exists(SOCKET_PATH):
@@ -1393,14 +1505,9 @@ def send_toggle() -> bool:
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
-    args = sys.argv[1:]
-
-    # Single-instance toggle: if already running, tell it to toggle then exit.
-    # This is the default behaviour when launched via a keyboard shortcut.
-    if "--daemon" not in args:
+    if "--daemon" not in sys.argv[1:]:
         if send_toggle():
             sys.exit(0)
-        # Not running — fall through and launch fresh
 
     app = QApplication(sys.argv)
     app.setApplicationName("pi-spotlight")
