@@ -7,4 +7,6 @@
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+export QT_QPA_PLATFORM=xcb
+
 exec python3 "$SCRIPT_DIR/pi-spotlight.py"
