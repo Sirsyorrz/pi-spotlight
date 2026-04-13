@@ -18,7 +18,6 @@ import pty
 import fcntl
 import termios
 import struct
-import socket
 import subprocess
 import threading
 import signal
@@ -53,25 +52,84 @@ except ImportError:
 
 # ─── Config defaults ──────────────────────────────────────────────────────────
 
-SOCKET_PATH = f"/tmp/pi-spotlight-{os.getuid()}.sock"
 CONFIG_PATH = os.path.expanduser("~/.config/pi-spotlight/config.json")
 
-AVAILABLE_MODELS = [
+PI_SETTINGS_PATH = os.path.expanduser("~/.pi/agent/settings.json")
+
+# Fallback model list used when pi settings are unavailable
+_FALLBACK_MODELS = [
     ("Sonnet 4.5",  "anthropic/claude-sonnet-4-5"),
     ("Sonnet 4.0",  "anthropic/claude-sonnet-4-0"),
     ("Haiku 3.5",   "anthropic/claude-haiku-3-5"),
     ("Opus 4",      "anthropic/claude-opus-4-0"),
 ]
 
+
+def _model_label(model_id: str) -> str:
+    """Derive a short human label from a fully-qualified model id.
+    e.g. 'anthropic/claude-sonnet-4-6' -> 'Sonnet 4.6'
+         'anthropic/claude-opus-4-6'   -> 'Opus 4.6'
+         'openai/gpt-4o'               -> 'GPT-4o'
+    """
+    name = model_id.split("/")[-1]          # strip provider prefix
+    name = name.replace("claude-", "")
+    parts = name.split("-")
+    # capitalise first word, keep the rest
+    if parts:
+        parts[0] = parts[0].capitalize()
+    return " ".join(parts)
+
+
+def load_pi_models() -> list[tuple[str, str]]:
+    """
+    Read ~/.pi/agent/settings.json and return a list of (label, model_id) pairs
+    sourced from enabledModels (with the defaultModel first).
+    Falls back to _FALLBACK_MODELS if the file is missing or malformed.
+    """
+    try:
+        with open(PI_SETTINGS_PATH) as f:
+            pi_cfg = json.load(f)
+
+        enabled = pi_cfg.get("enabledModels", [])
+        default = pi_cfg.get("defaultModel", "")
+
+        # Normalise: ensure every entry has the provider prefix
+        def _normalise(mid: str) -> str:
+            if "/" not in mid:
+                mid = f"anthropic/{mid}"
+            return mid
+
+        enabled = [_normalise(m) for m in enabled]
+        default = _normalise(default)
+
+        # Put the default model first; then the rest in order; deduplicate
+        ordered: list[str] = []
+        if default:
+            ordered.append(default)
+        for m in enabled:
+            if m not in ordered:
+                ordered.append(m)
+
+        if ordered:
+            return [(_model_label(m), m) for m in ordered]
+    except Exception:
+        pass
+
+    return list(_FALLBACK_MODELS)
+
+
+# Populated at import time; re-read on each Settings save
+AVAILABLE_MODELS: list[tuple[str, str]] = load_pi_models()
+
 DEFAULT_CONFIG = {
-    "model":               "anthropic/claude-sonnet-4-5",
+    "model":               (AVAILABLE_MODELS[0][1] if AVAILABLE_MODELS else "anthropic/claude-sonnet-4-5"),
     "quick_tools":         "read",
     "agent_cwd":           "~",
     "pi_bin":              "",
     "font_family":         "JetBrains Mono",
-    "font_size":           13,
-    "terminal_cols":       118,
-    "terminal_rows":       34,
+    "font_size":           8,
+    "terminal_cols":       150,
+    "terminal_rows":       25,
     "position_y_fraction": 0.10,
 }
 
@@ -169,6 +227,11 @@ def load_config() -> dict:
         pass
     if not cfg.get("pi_bin"):
         cfg["pi_bin"] = find_pi_binary()
+    # If the saved model isn't in the current AVAILABLE_MODELS list, reset to
+    # whatever pi's settings consider the default (first in list).
+    valid_ids = {mid for _, mid in AVAILABLE_MODELS}
+    if cfg.get("model") not in valid_ids and AVAILABLE_MODELS:
+        cfg["model"] = AVAILABLE_MODELS[0][1]
     return cfg
 
 
@@ -774,7 +837,6 @@ class SpotlightWindow(QWidget):
 
         self._setup_window()
         self._setup_ui()
-        self._setup_socket_listener()
 
     # ── Window ────────────────────────────────────────────────────────────────
 
@@ -883,16 +945,12 @@ class SpotlightWindow(QWidget):
 
         # ── Hints ──
         self._hint = QLabel(
-            "↵ ask  ·  esc close  ·  ctrl+l clear  ·  ctrl+m model  ·  ctrl+a agent"
+            "↵ ask  ·  esc close"
         )
         self._hint.setObjectName("hint")
         self._hint.setAlignment(Qt.AlignCenter)
 
-        self._agent_hint = QLabel(
-            "esc hide  ·  ctrl+q quick mode  ·  ctrl+c interrupt  ·  ctrl+l clear  ·  ↺ new session: ctrl+n"
-        )
-        self._agent_hint.setObjectName("hint")
-        self._agent_hint.setAlignment(Qt.AlignCenter)
+        self._agent_hint = QLabel("")
         self._agent_hint.hide()
 
         # ── Settings ──
@@ -908,7 +966,6 @@ class SpotlightWindow(QWidget):
         cl.addWidget(self._response, 1)
         cl.addWidget(self._term_container, 1)
         cl.addWidget(self._hint)
-        cl.addWidget(self._agent_hint)
         cl.addWidget(self._settings_panel)
 
         root.addWidget(self._card, 1)
@@ -1145,7 +1202,8 @@ class SpotlightWindow(QWidget):
     def _hide_window(self):
         if self._worker:
             self._worker.stop()
-        self.hide()
+        self._destroy_terminal()
+        QApplication.quit()
 
     # ── Quick mode ────────────────────────────────────────────────────────────
 
@@ -1356,9 +1414,6 @@ class SpotlightWindow(QWidget):
         self._current_model = AVAILABLE_MODELS[idx][1]
         self._cfg["model"]  = self._current_model
 
-    def _cycle_model(self):
-        idx = self._model_picker.currentIndex()
-        self._model_picker.setCurrentIndex((idx + 1) % len(AVAILABLE_MODELS))
 
     # ── Settings ──────────────────────────────────────────────────────────────
 
@@ -1379,6 +1434,8 @@ class SpotlightWindow(QWidget):
         self._card.layout().addWidget(self._settings_panel)
         self._apply_styles()
         self._settings_panel.show()
+        # Let Qt compute the natural height before we measure it
+        self._settings_panel.adjustSize()
         self._resize_for_content()
 
     def _close_settings(self):
@@ -1393,32 +1450,45 @@ class SpotlightWindow(QWidget):
         self.setFixedHeight(h)
         self._center_on_screen()
 
+    def _settings_height(self) -> int:
+        """Actual height the settings panel needs, measured after adjustSize()."""
+        if not self._settings_open:
+            return 0
+        return self._settings_panel.sizeHint().height() + 8  # +8 breathing room
+
     def _resize_for_content(self):
-        SETTINGS_H = 380
+        extra = self._settings_height()
+        w_open = self._settings_open
         if self._mode == "agent" and self._term_widget:
-            extra = SETTINGS_H if self._settings_open else 0
             base_w = self._term_widget.width()  + CARD_MARGIN_H
             base_h = self._term_widget.height() + CARD_MARGIN_V
             self._set_window_size(base_w, base_h + extra)
         elif self._expanded:
-            extra = SETTINGS_H if self._settings_open else 0
-            w = WINDOW_W_SETTINGS if self._settings_open else WINDOW_W_QUICK
+            w = WINDOW_W_SETTINGS if w_open else WINDOW_W_QUICK
             self._set_window_size(w, WINDOW_H_QUICK_X + extra)
         else:
-            extra = SETTINGS_H if self._settings_open else 0
-            w = WINDOW_W_SETTINGS if self._settings_open else WINDOW_W_QUICK
+            w = WINDOW_W_SETTINGS if w_open else WINDOW_W_QUICK
             self._set_window_size(w, WINDOW_H_QUICK + extra)
 
     def _on_settings_saved(self, new_cfg: dict):
+        global AVAILABLE_MODELS
         self._cfg           = new_cfg
         self._current_model = new_cfg.get("model", self._current_model)
-        for idx, (_, mid) in enumerate(AVAILABLE_MODELS):
-            if mid == self._current_model:
-                self._model_picker.setCurrentIndex(idx)
-                break
+        AVAILABLE_MODELS = load_pi_models()
         save_config(self._cfg)
         self._apply_styles()
         self._close_settings()
+        # Rebuild model picker with refreshed list
+        self._model_picker.blockSignals(True)
+        self._model_picker.clear()
+        for label, _ in AVAILABLE_MODELS:
+            self._model_picker.addItem(label)
+        cur = self._current_model
+        for idx, (_, mid) in enumerate(AVAILABLE_MODELS):
+            if mid == cur:
+                self._model_picker.setCurrentIndex(idx)
+                break
+        self._model_picker.blockSignals(False)
         # Recreate terminal if in agent mode (new font/size/cols may apply)
         if self._mode == "agent":
             self._create_terminal()
@@ -1451,67 +1521,17 @@ class SpotlightWindow(QWidget):
                 self._term_widget.keyPressEvent(event)
             return
 
-        # Quick mode shortcuts
-        if key == Qt.Key_L and mods == Qt.ControlModifier:
-            self._collapse_response()
-            self._input.clear()
-            self._input.setFocus()
-        elif key == Qt.Key_M and mods == Qt.ControlModifier:
-            self._cycle_model()
-        elif key == Qt.Key_A and mods == Qt.ControlModifier:
-            self._enter_agent_mode()
-        else:
-            super().keyPressEvent(event)
-
-    # ── Socket listener ───────────────────────────────────────────────────────
-
-    def _setup_socket_listener(self):
-        threading.Thread(target=self._socket_server, daemon=True).start()
-
-    def _socket_server(self):
-        if os.path.exists(SOCKET_PATH):
-            os.unlink(SOCKET_PATH)
-        srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        srv.bind(SOCKET_PATH)
-        srv.listen(5)
-        while True:
-            try:
-                conn, _ = srv.accept()
-                data = conn.recv(64).decode().strip()
-                conn.close()
-                if data == "toggle":
-                    QTimer.singleShot(0, self.toggle)
-                elif data == "show":
-                    QTimer.singleShot(0, self._show_window)
-                elif data == "hide":
-                    QTimer.singleShot(0, self._hide_window)
-            except Exception:
-                pass
-
+        # Quick mode — no extra shortcuts
+        super().keyPressEvent(event)
 
 # ─── Toggle helper ────────────────────────────────────────────────────────────
-
-def send_toggle() -> bool:
-    try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.connect(SOCKET_PATH)
-        s.sendall(b"toggle")
-        s.close()
-        return True
-    except Exception:
-        return False
-
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
-    if "--daemon" not in sys.argv[1:]:
-        if send_toggle():
-            sys.exit(0)
-
     app = QApplication(sys.argv)
     app.setApplicationName("pi-spotlight")
-    app.setQuitOnLastWindowClosed(False)
+    app.setQuitOnLastWindowClosed(True)
 
     win = SpotlightWindow()
     win._show_window()
