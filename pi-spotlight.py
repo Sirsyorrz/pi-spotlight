@@ -123,7 +123,6 @@ AVAILABLE_MODELS: list[tuple[str, str]] = load_pi_models()
 
 DEFAULT_CONFIG = {
     "model":               (AVAILABLE_MODELS[0][1] if AVAILABLE_MODELS else "anthropic/claude-sonnet-4-5"),
-    "quick_tools":         "read",
     "agent_cwd":           "~",
     "pi_bin":              "",
     "font_family":         "JetBrains Mono",
@@ -706,28 +705,6 @@ class SettingsPanel(QWidget):
         row1.addWidget(self._model_combo, 1)
         layout.addLayout(row1)
 
-        # Quick tools
-        row2 = QHBoxLayout(); row2.setSpacing(10)
-        row2.addWidget(self._lbl("Quick tools"))
-        self._tools_read = QPushButton("Read-only")
-        self._tools_read.setObjectName("toolsBtn")
-        self._tools_read.setCheckable(True)
-        self._tools_read.setFixedHeight(ROW_H)
-        self._tools_all = QPushButton("All tools")
-        self._tools_all.setObjectName("toolsBtn")
-        self._tools_all.setCheckable(True)
-        self._tools_all.setFixedHeight(ROW_H)
-        if self._cfg.get("quick_tools", "read") == "read":
-            self._tools_read.setChecked(True)
-        else:
-            self._tools_all.setChecked(True)
-        self._tools_read.clicked.connect(lambda: self._tools_all.setChecked(False))
-        self._tools_all.clicked.connect(lambda: self._tools_read.setChecked(False))
-        row2.addWidget(self._tools_read)
-        row2.addWidget(self._tools_all)
-        row2.addStretch()
-        layout.addLayout(row2)
-
         div = QFrame(); div.setFrameShape(QFrame.HLine); div.setObjectName("settingsDivider")
         layout.addWidget(div)
 
@@ -805,7 +782,6 @@ class SettingsPanel(QWidget):
     def _save(self):
         idx = self._model_combo.currentIndex()
         self._cfg["model"]         = AVAILABLE_MODELS[idx][1]
-        self._cfg["quick_tools"]   = "read" if self._tools_read.isChecked() else "all"
         self._cfg["agent_cwd"]     = self._cwd_edit.text()
         self._cfg["pi_bin"]        = self._pi_edit.text()
         try:
@@ -1356,7 +1332,7 @@ class SpotlightWindow(QWidget):
         self._in_thinking = False
 
         pi_bin = self._cfg.get("pi_bin", "") or find_pi_binary()
-        tools  = self._cfg.get("quick_tools", "read")
+        tools  = "read"
 
         self._worker = PiWorker(prompt, self._current_model, pi_bin, tools)
         self._worker.thinking.connect(self._on_thinking)
