@@ -130,6 +130,7 @@ DEFAULT_CONFIG = {
     "terminal_cols":       150,
     "terminal_rows":       25,
     "position_y_fraction": 0.10,
+    "quick_system_prompt": "You are a fast, concise search engine and general AI assistant. Keep responses brief.",
 }
 
 # Card chrome measurements (margins + header + divider + hint + spacings)
@@ -248,12 +249,13 @@ class PiWorker(QThread):
     finished = pyqtSignal()
     error    = pyqtSignal(str)
 
-    def __init__(self, prompt: str, model: str, pi_bin: str, tools: str = "read"):
+    def __init__(self, prompt: str, model: str, pi_bin: str, tools: str = "read", system_prompt: str = ""):
         super().__init__()
         self.prompt  = prompt
         self.model   = model
         self.pi_bin  = pi_bin
         self.tools   = tools
+        self.system_prompt = system_prompt
         self._proc   = None
 
     def run(self):
@@ -262,10 +264,13 @@ class PiWorker(QThread):
             self.finished.emit()
             return
         try:
+            cmd = [self.pi_bin, "--model", self.model, "--no-session",
+                   "--mode", "json", "--tools", self.tools]
+            if self.system_prompt:
+                cmd.extend(["--system-prompt", self.system_prompt])
+            cmd.extend(["-p", self.prompt])
             self._proc = subprocess.Popen(
-                [self.pi_bin, "--model", self.model, "--no-session",
-                 "--mode", "json", "--tools", self.tools,
-                 "-p", self.prompt],
+                cmd,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, bufsize=1,
             )
@@ -757,6 +762,14 @@ class SettingsPanel(QWidget):
         term_row.addStretch()
         layout.addLayout(term_row)
 
+        # Quick System Prompt
+        sys_prompt_row = QHBoxLayout(); sys_prompt_row.setSpacing(10)
+        sys_prompt_row.addWidget(self._lbl("Quick Prompt"))
+        self._sys_prompt_edit = QLineEdit(self._cfg.get("quick_system_prompt", ""))
+        self._sys_prompt_edit.setObjectName("settingsInput"); self._sys_prompt_edit.setFixedHeight(ROW_H)
+        sys_prompt_row.addWidget(self._sys_prompt_edit, 1)
+        layout.addLayout(sys_prompt_row)
+
         # Actions
         act_row = QHBoxLayout(); act_row.setSpacing(10)
         agent_btn = QPushButton("⚡  Switch to Agent Mode")
@@ -784,6 +797,7 @@ class SettingsPanel(QWidget):
         self._cfg["model"]         = AVAILABLE_MODELS[idx][1]
         self._cfg["agent_cwd"]     = self._cwd_edit.text()
         self._cfg["pi_bin"]        = self._pi_edit.text()
+        self._cfg["quick_system_prompt"] = self._sys_prompt_edit.text()
         try:
             self._cfg["font_size"] = int(self._font_size_edit.text())
         except ValueError:
@@ -1334,7 +1348,7 @@ class SpotlightWindow(QWidget):
         pi_bin = self._cfg.get("pi_bin", "") or find_pi_binary()
         tools  = "read"
 
-        self._worker = PiWorker(prompt, self._current_model, pi_bin, tools)
+        self._worker = PiWorker(prompt, self._current_model, pi_bin, tools, self._cfg.get("quick_system_prompt", ""))
         self._worker.thinking.connect(self._on_thinking)
         self._worker.chunk.connect(self._on_chunk)
         self._worker.finished.connect(self._on_done)
